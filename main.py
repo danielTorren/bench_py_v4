@@ -89,22 +89,26 @@ def _print_mean_table(all_models, case, learning):
                 accum[f"dwage{cat}"][s.year].append(p)
 
     n = len(all_models)
-    print(f"\nMean renovation rate  ({case} / {learning} / N={n} runs)")
-    print(f"{'Year':>6}  {'All%':>7}  {'New%':>7}  {'Mid%':>7}  {'Old%':>7}")
+    #print(f"\nMean renovation rate  ({case} / {learning} / N={n} runs)")
+    #print(f"{'Year':>6}  {'All%':>7}  {'New%':>7}  {'Mid%':>7}  {'Old%':>7}")
     for yr in sorted(accum["all"].keys()):
         def m(key):
             v = accum[key][yr]
             return sum(v) / len(v) if v else 0.0
-        print(f"{yr:>6}  {m('all'):>7.2f}  {m('dwage1'):>7.2f}  "
-              f"{m('dwage2'):>7.2f}  {m('dwage3'):>7.2f}")
+        #print(f"{yr:>6}  {m('all'):>7.2f}  {m('dwage1'):>7.2f}  "
+        #      f"{m('dwage2'):>7.2f}  {m('dwage3'):>7.2f}")
 
 
 def _run_scenario(case, learning, runs, memory, output_dir,
-                  run_label, verbose, no_plot):
+                  run_label, verbose, no_plot, timestamped=True):
     """Execute one scenario (possibly many seed runs) and save outputs."""
-    slug        = _LEARNING_SLUG.get(learning, learning.replace(" ", "_"))
-    label       = run_label if run_label else f"{case}_{slug}"
-    config_dir  = _make_config_dir(output_dir, label)
+    slug  = _LEARNING_SLUG.get(learning, learning.replace(" ", "_"))
+    label = run_label if run_label else f"{case}_{slug}"
+    if timestamped:
+        config_dir = _make_config_dir(output_dir, label)
+    else:
+        config_dir = os.path.join(output_dir, label)
+        os.makedirs(config_dir, exist_ok=True)
     runs_dir    = os.path.join(config_dir, "runs")
     os.makedirs(runs_dir, exist_ok=True)
 
@@ -134,8 +138,8 @@ def _run_scenario(case, learning, runs, memory, output_dir,
             n_hh = len(model.households)
             pct  = 100 * sum(s.n_renovated for s in model.history) / (
                        n_hh * len(model.history)) if n_hh and model.history else 0
-            print(f"  {run_label_i}  seed={model.seed}  "
-                  f"mean_annual_renov={pct:.2f}%")
+            #print(f"  {run_label_i}  seed={model.seed}  "
+            #      f"mean_annual_renov={pct:.2f}%")
 
     if not single_run:
         _print_mean_table(all_models, case, learning)
@@ -143,12 +147,12 @@ def _run_scenario(case, learning, runs, memory, output_dir,
     if not no_plot:
         try:
             from bench_v4.plotting import plot_all
-            print("\nGenerating plots...")
+            #print("\nGenerating plots...")
             plot_all(config_dir)
         except ImportError as e:
             print(f"Plotting skipped (missing dependency: {e})")
 
-    print(f"Done -> {config_dir}")
+    #print(f"Done -> {config_dir}")
     return config_dir
 
 
@@ -189,18 +193,36 @@ def main():
     memory = not args.no_memory
 
     if args.config:
-        scenarios = _load_yaml(args.config)
+        scenarios   = _load_yaml(args.config)
+        config_stem = Path(args.config).stem
+        parent_dir  = _make_config_dir(args.output_dir, config_stem)
+        total_runs  = sum(sc.get("runs", 1) for sc in scenarios)
+        print(f"Config run folder : {parent_dir}")
+        print(f"Scenarios         : {len(scenarios)}")
+        print(f"Total runs        : {total_runs}")
         for sc in scenarios:
             _run_scenario(
                 case       = sc.get("case_study", "NL"),
                 learning   = sc.get("learning", "Informative"),
                 runs       = sc.get("runs", 1),
                 memory     = sc.get("memory", True),
-                output_dir = args.output_dir,
+                output_dir = parent_dir,
                 run_label  = sc.get("run_label", None),
                 verbose    = args.verbose,
                 no_plot    = args.no_plot,
+                timestamped= False,
             )
+
+        # multi-scenario comparison plots (all scenarios combined)
+        if not args.no_plot:
+            try:
+                from bench_v4.plotting import plot_multi_scenario
+                print("\nGenerating multi-scenario comparison plots...")
+                plot_multi_scenario(parent_dir)
+            except ImportError as e:
+                print(f"Multi-scenario plotting skipped (missing dependency: {e})")
+
+        print(f"\nAll done.  Results in: {parent_dir}")
     else:
         # honour --seed only for single runs (ignored for ensembles)
         single = args.runs == 1
@@ -234,8 +256,8 @@ def main():
                 n_hh = len(model.households)
                 pct  = 100 * sum(s.n_renovated for s in model.history) / (
                            n_hh * len(model.history)) if n_hh and model.history else 0
-                print(f"  {run_label_i}  seed={model.seed}  "
-                      f"mean_annual_renov={pct:.2f}%  -> {run_dir}")
+                #print(f"  {run_label_i}  seed={model.seed}  "
+                #      f"mean_annual_renov={pct:.2f}%  -> {run_dir}")
 
         if not single:
             _print_mean_table(all_models, args.case, args.learning)
@@ -243,7 +265,7 @@ def main():
         if not args.no_plot:
             try:
                 from bench_v4.plotting import plot_all
-                print("\nGenerating plots...")
+                #print("\nGenerating plots...")
                 plot_all(config_dir)
             except ImportError as e:
                 print(f"Plotting skipped (missing dependency: {e})")
