@@ -152,7 +152,7 @@ class BENCHv4:
         # data directory
         if data_dir is None:
             here = Path(__file__).parent.parent
-            data_dir = str(here / "netlogo")
+            data_dir = str(here / "data")
         self.data_dir = data_dir
 
         # simulation state

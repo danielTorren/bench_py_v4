@@ -2,13 +2,13 @@
 
 Python translation of the BENCH NetLogo model (v4), replicating the renovation/insulation module from:
 
-> Niamir, L., et al. (2024). *Energizing building renovation: Unraveling the dynamic interplay of building stock evolution, individual behaviour, and social norms.* Energy Research & Social Science, 110. https://doi.org/10.1016/j.erss.2024.103446
+> Niamir, L., et al. (2024). *Energizing building renovation: Unraveling the dynamic interplay of building stock evolution, individual behaviour, and social norms.* Energy Research & Social Science, 110. https://doi.org/10.1016/j.erss.2024.103445
 
 ---
 
 ## What the model does
 
-BENCH (Behavioural Energy and Climate Change household) is an agent-based model of residential building renovation. Each agent represents a household that may decide to insulate their home. The model is calibrated from survey data for two regional case studies:
+BENCH_v.4 (Behavioral change in ENergy Consumption of Households) is an agent-based model of residential building renovation. Each agent represents a household that may decide to insulate their home. The model is calibrated from survey data for two regional case studies:
 
 - **NL** — Netherlands, Overijssel province (759 households)
 - **ES** — Spain, Navarre region (793 households)
