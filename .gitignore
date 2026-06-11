@@ -1,0 +1,46 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+output/
+netlogo/
+version_2/
+
+# Virtual environments
+.venv
+
+# === uv specific files ===
+# Keep uv.lock in version control! But ignore uv tracking/cache if generated locally.
+.uv/
+
+# === Poetry Migrations (Optional cleanup) ===
+# If you are completely migrating away, you can keep or delete poetry.lock.
+# If you still need poetry as a backup, don't ignore poetry.lock.
+.poetry/
+
+# === Python bytecode and caches ===
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# === OS & IDE Specific files ===
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# === Environment variables & Secrets ===
+.env
+.env.local
+.secret
+
+# === Netlogo genertated===
+debug.csv
