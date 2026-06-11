@@ -8,6 +8,7 @@ wheels/
 output/
 netlogo/
 version_2/
+sensitivty/results/
 
 # Virtual environments
 .venv

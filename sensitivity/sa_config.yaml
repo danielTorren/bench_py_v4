@@ -1,0 +1,56 @@
+# Sobol sensitivity analysis configuration for BENCH v4
+# -------------------------------------------------------
+# Varies behavioural decision thresholds to identify which parameters
+# most strongly drive renovation rate, energy saved, and action count.
+#
+# Total model evaluations = n_samples * (n_params + 2)  when calc_second_order: false
+# With 10 parameters and n_samples=64  ->  64 * 12 = 768 evaluations
+# With n_seeds=5 per evaluation        ->  3840 model runs total
+#
+# Reduce n_samples for a quick test (e.g. 16 -> 288 evals x 5 seeds = 1440 runs).
+# Increase n_samples for more stable indices (128+ recommended for publication).
+
+case_study: NL        # NL or ES
+learning: Slow dynamics # Slow dynamics | Fast dynamics | Informative | No learning
+memory: true
+
+n_samples: 512         # SALib base sample count N
+n_seeds: 64            # random seeds averaged per parameter set
+calc_second_order: false
+n_jobs: -1             # parallel workers: -1 = all available cores, or set a fixed number
+
+output_dir: output
+
+# Parameter bounds [lower, upper] — absolute values on the same scale as the parameter.
+# All behavioural attributes are on a 1-7 Likert scale; thresholds should stay within [1, 7].
+# NL base values are shown first; ES base values in parentheses.
+parameters:
+  - name: guilt_thresh
+    bounds: [3.0, 6.5]       # base NL: 4.6  (ES: 5.2)
+
+  - name: motivation_m1_pn   # personal-norm threshold for investment motivation
+    bounds: [2.0, 7.0]       # base NL: 4.7  (ES: 5.67)
+
+  - name: motivation_m1_sn   # social-norm threshold for investment motivation
+    bounds: [1.0, 6.0]       # base NL: 3.5  (ES: 4.77)
+
+  - name: motivation_m2_pn   # personal-norm threshold for conservation motivation
+    bounds: [2.0, 7.0]       # base NL: 4.8  (ES: 5.40)
+
+  - name: motivation_m2_sn   # social-norm threshold for conservation motivation
+    bounds: [1.0, 6.0]       # base NL: 3.6  (ES: 4.45)
+
+  - name: motivation_m3_pn   # personal-norm threshold for switching motivation
+    bounds: [2.0, 7.0]       # base NL: 4.8  (ES: 5.78)
+
+  - name: motivation_m3_sn   # social-norm threshold for switching motivation
+    bounds: [1.0, 6.5]       # base NL: 3.7  (ES: 5.05)
+
+  - name: pbc_invest          # perceived-behavioural-control threshold for investment
+    bounds: [0.5, 5.0]       # base NL: 1.0  (ES: 2.2)
+
+  - name: pbc_conserv         # PBC threshold for conservation (same both countries)
+    bounds: [0.5, 4.0]       # base NL/ES: 1.0
+
+  - name: pbc_switch          # PBC threshold for switching
+    bounds: [0.5, 5.0]       # base NL: 1.0  (ES: 3.5)

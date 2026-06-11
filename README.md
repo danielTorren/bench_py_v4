@@ -324,19 +324,3 @@ save_run(model, "my_output/run_001")
 plot_all("my_output")
 ```
 
----
-
-## Key parameters
-
-| Parameter | NL | ES | Source |
-|---|---|---|---|
-| Awareness threshold (guilt) | 4.6 | 5.2 | Survey calibration |
-| Motivation threshold pn1 | 4.7 | 5.67 | Survey calibration |
-| Motivation threshold sn1 | 3.5 | 4.77 | Survey calibration |
-| PBC investment threshold | 1.0 | 2.2 | Survey calibration |
-| Renovation cost | €3,000 | €3,000 | Literature |
-| Gas saving fraction | 20% | 20% | Engineering estimate |
-| Cooldown: new dwelling | 15 yr | 15 yr | NetLogo v4 |
-| Cooldown: middle dwelling | 7 yr | 7 yr | NetLogo v4 |
-| Cooldown: old dwelling | 2 yr | 2 yr | NetLogo v4 |
-| Learning rate | 5%/yr | 5%/yr | NetLogo v4 |
