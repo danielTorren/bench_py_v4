@@ -66,19 +66,68 @@ bench_v4/
   household.py     Household agent class (mirrors NetLogo turtle-own variables)
   model.py         BENCHv4 simulation engine (go-procedure logic)
   output.py        Per-run CSV / JSON / TXT saving
-  plotting.py      Batch plots with mean +/- 95% CI across seed runs
+  plotting.py      Single-scenario and multi-scenario plots (mean +/- 95% CI)
   __init__.py
 
 configs/
-  bench_v4_scenarios.yaml   Example multi-scenario YAML config
+  bench_v4_scenarios.yaml   Multi-scenario YAML config (8 scenarios, NL + ES)
 
-netlogo/
-  BENCH_ v04_ B-NLD.ESP.nlogox   Original NetLogo source (read-only reference)
-  cge-nl-ssp2-h.csv              CGE income growth data for NL (175 rows)
-  cge-es-ssp2-h.csv              CGE income growth data for ES (35 rows)
+data/
+  cge-nl-ssp2-h.csv         CGE income growth multipliers for NL (175 rows)
+  cge-es-ssp2-h.csv         CGE income growth multipliers for ES (35 rows)
 
 main.py            CLI entry point
 ```
+
+---
+
+## Module reference
+
+### `bench_v4/params.py`
+
+Stores every empirical constant and initialization distribution from the NetLogo source, with nothing embedded in the model logic. This includes utility-function coefficients, guilt and motivation thresholds (different for NL and ES), PBC thresholds for each behaviour type, social-learning rate and cap, memory-recall probabilities, cooldown periods by dwelling age, and the MESSAGEix-Buildings dwelling-age update tables used from 2025 onwards. All per-income-group distributions for behavioral attributes (income, gas use, knowledge, personal norm, social norm, PBC, etc.) are defined here as `NL_GROUPS` and `ES_GROUPS` lists.
+
+### `bench_v4/household.py`
+
+The `Household` class represents a single agent, mapping one-to-one to a NetLogo turtle. Attribute names follow the NetLogo originals with dots replaced by underscores (e.g. `dw.elab` → `dw_elab`). On construction it stochastically initialises all attributes by drawing from the per-income-group distributions in `params.py`. The module also provides `_rand_num()`, an exact Python translation of NetLogo's `randomNumber` reporter (stepped uniform distribution over a discrete grid). `__slots__` is used throughout to keep per-agent memory low when running large ensembles.
+
+### `bench_v4/model.py`
+
+The simulation engine. `BENCHv4.run()` calls `setup()` then iterates `go()` from 2016 to 2050. Each tick of `go()` follows the NetLogo procedure order exactly:
+
+1. `_update_info` — reset `act1` to False
+2. `_recall_memory` — assign pre-2016 renovation history in the first year
+3. `_update_dwelling` — probabilistically shift dwelling age from 2025 using MESSAGEix projections
+4. `_knowledge` — compute household awareness and guilt status
+5. `_motivation` — set motivation status for investment, conservation, and switching
+6. `_consideration` — filter by PBC and ownership constraints
+7. `_utility` — calculate renovation utility score `U1`
+8. `_action` — set `act1=True` for households with `U1 > 0` who have not recently renovated
+9. `_save_energy` / `_invest` — record gas savings and renovation cost
+10. `_learn` — social learning between spatial neighbours (mode-dependent)
+11. `_update_income` — apply CGE growth multiplier to household income
+12. `_update_energy` — improve energy label for renovating households
+13. `_update_memory` — increment renovation cooldown counter and reset when expired
+
+At the end of each tick, `_collect_stats()` assembles an `AnnualStats` dataclass record that is appended to `model.history`.
+
+### `bench_v4/output.py`
+
+`save_run(model, run_dir)` writes three files for one completed run:
+
+- `annual_results.csv` — one row per simulation year, all 31 metric columns
+- `run_config.json` — the parameters used (`case_study`, `learning`, `seed`, `n_households`, `memory`, `start_year`, `end_year`)
+- `summary.txt` — a human-readable table of year, renovation count, percentage, gas saved, and investment
+
+### `bench_v4/plotting.py`
+
+Two public functions for visualising ensemble results:
+
+**`plot_all(config_dir)`** reads all `runs/*/annual_results.csv` files, aggregates them into mean ± 95% CI (1.96 × std / sqrt(n)), and saves 10 PNG plots to `config_dir/plots/`. Plots cover overall renovation rate, vintage breakdown (annual and cumulative), income-group breakdown, behaviour counts, investment, energy savings, motivation states, gas savings, and awareness.
+
+**`plot_multi_scenario(parent_dir)`** auto-discovers all scenario subfolders by reading the `run_config.json` inside each, organises them into a grid (rows = learning mode, columns = case study), and saves two comparison plots to `parent_dir/multi_scenario_plots/`:
+- a subplot grid showing renovation rate by vintage with CI bands
+- a subplot grid showing grouped bar charts of renovation by income group at five-year snapshots (2020–2050)
 
 ---
 
@@ -139,16 +188,18 @@ The YAML file defines a list of scenarios run in sequence. See [configs/bench_v4
 
 ## Output structure
 
-Each run creates a timestamped folder:
+### Direct CLI run
+
+A single timestamped folder is created for the scenario:
 
 ```
 output/
   NL_Informative_20260101_120000/
     runs/
       run_001_seed_386129255/
-        annual_results.csv      Per-year metrics
+        annual_results.csv      Per-year metrics (one row per year)
         run_config.json         Seed, case, learning, n_households
-        summary.txt             Human-readable table
+        summary.txt             Human-readable summary table
       run_002_seed_.../
         ...
     plots/
@@ -164,7 +215,32 @@ output/
       avg_awareness.png
 ```
 
-All plots show the **mean line** across runs with a **shaded 95% confidence interval** band.
+### Config-file run
+
+One parent folder is created for the entire config run. Each scenario gets a subfolder inside it. After all scenarios complete, multi-scenario comparison plots are saved alongside the scenario folders:
+
+```
+output/
+  bench_v4_scenarios_20260101_120000/   <- one folder per config run
+    NL_Informative/
+      runs/
+        run_001_seed_.../
+          annual_results.csv
+          run_config.json
+          summary.txt
+        ...
+      plots/
+        (10 plots, same as above)
+    NL_Slow_dynamics/
+      ...
+    ES_Informative/
+      ...
+    multi_scenario_plots/
+      multi_renovation_by_vintage.png          Vintage renovation grid (rows=learning, cols=case)
+      multi_renovation_by_income_histogram.png Income group bars at 5-year intervals
+```
+
+All single-scenario plots show the **mean line** across seed runs with a **shaded 95% confidence interval** band.
 
 ### annual_results.csv columns
 
@@ -173,18 +249,34 @@ All plots show the **mean line** across runs with a **shaded 95% confidence inte
 | `year` | Calendar year (2016–2050) |
 | `n_renovated` | Households renovating this year |
 | `n_conservation` | Households conserving (0 in v4, forward-compatible) |
-| `n_switching` | Households switching energy source (0 in v4) |
+| `n_switching` | Households switching energy source (0 in v4, forward-compatible) |
 | `pct_renovated` | % of total households renovating |
-| `renov_pct_dwage1/2/3` | % renovating by dwelling vintage (new/middle/old) |
-| `renov_cum_pct_dwage1/2/3` | Cumulative renovation rate by vintage |
-| `renov_pct_grp1..5` | % renovating by income group |
+| `pct_conservation` | % of total households conserving |
+| `pct_switching` | % of total households switching |
+| `renov_pct_dwage1` | % renovating — new dwellings (<10 yr) |
+| `renov_pct_dwage2` | % renovating — middle dwellings (11–35 yr) |
+| `renov_pct_dwage3` | % renovating — old dwellings (>35 yr) |
+| `renov_cum_pct_dwage1` | Cumulative renovation rate — new dwellings |
+| `renov_cum_pct_dwage2` | Cumulative renovation rate — middle dwellings |
+| `renov_cum_pct_dwage3` | Cumulative renovation rate — old dwellings |
+| `renov_pct_grp1` | % renovating — income group 1 (lowest) |
+| `renov_pct_grp2` | % renovating — income group 2 |
+| `renov_pct_grp3` | % renovating — income group 3 |
+| `renov_pct_grp4` | % renovating — income group 4 |
+| `renov_pct_grp5` | % renovating — income group 5 (highest) |
 | `total_gas_saved_kwh` | Annual gas savings from renovation (kWh) |
+| `total_energy_conservation_kwh` | Annual energy savings from conservation (kWh) |
+| `total_energy_switching_kwh` | Annual energy savings from fuel switching (kWh) |
 | `total_investment_eur` | Annual renovation expenditure (EUR) |
-| `avg_aware` | Mean household awareness (0–7) |
-| `high_guilt_pct` | % households with awareness above threshold |
-| `high_m1_pct` | % households motivated for renovation |
-| `high_m2_pct` | % households motivated for conservation |
-| `high_m3_pct` | % households motivated for switching |
+| `total_invest_conservation_eur` | Annual conservation expenditure (EUR) |
+| `total_invest_switching_eur` | Annual switching expenditure (EUR) |
+| `avg_aware` | Mean household awareness (1–7 Likert) |
+| `avg_pn1` | Mean personal norm for renovation (1–7 Likert) |
+| `avg_sn1` | Mean social norm for renovation (1–7 Likert) |
+| `high_guilt_pct` | % households with awareness above guilt threshold |
+| `high_m1_pct` | % households with high motivation for renovation |
+| `high_m2_pct` | % households with high motivation for conservation |
+| `high_m3_pct` | % households with high motivation for switching |
 
 ---
 

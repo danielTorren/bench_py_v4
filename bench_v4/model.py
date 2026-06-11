@@ -145,7 +145,7 @@ class BENCHv4:
 
         # random seed
         if seed is None:
-            seed = random.randint(0, 2**31 - 1)
+            seed = 1
         self.seed = seed
         random.seed(seed)
 
