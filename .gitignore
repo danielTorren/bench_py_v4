@@ -46,3 +46,6 @@ Thumbs.db
 
 # === Netlogo genertated===
 debug.csv
+
+# === Slurm logs ===
+*.log
