@@ -15,7 +15,7 @@
 #SBATCH --job-name=bench_v4_sa
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=64        # parallel workers; adjust to available cores
-#SBATCH --time=06:00:00           # wall-clock limit; increase for large SA runs
+#SBATCH --time=18:00:00           # wall-clock limit; increase for large SA runs
 #SBATCH --mem=32gb                # total RAM for the job
 #SBATCH --output=sa_%j.log        # log file in the directory where sbatch is run
 #SBATCH --partition=generic
