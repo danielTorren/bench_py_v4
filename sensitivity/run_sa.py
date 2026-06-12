@@ -297,6 +297,9 @@ def main():
             "ST":      Si["ST"].tolist(),
             "ST_conf": Si["ST_conf"].tolist(),
         }
+        if calc_s2:
+            indices[k]["S2"]      = Si["S2"].tolist()
+            indices[k]["S2_conf"] = Si["S2_conf"].tolist()
 
     result_doc = {
         "case_study":   case_study,

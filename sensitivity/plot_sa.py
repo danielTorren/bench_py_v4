@@ -170,6 +170,56 @@ def plot_summary(results_dir, doc, plots_dir):
 
 
 # ---------------------------------------------------------------------------
+# Second-order (S2) heatmaps
+# ---------------------------------------------------------------------------
+
+def plot_s2_heatmaps(doc, plots_dir):
+    param_names  = doc["param_names"]
+    output_names = doc["output_names"]
+    indices      = doc["indices"]
+    n_params     = len(param_names)
+    labels       = [_plabel(p) for p in param_names]
+
+    for out_name in output_names:
+        idx = indices[out_name]
+        if "S2" not in idx:
+            continue
+
+        S2      = np.array(idx["S2"])
+        S2_conf = np.array(idx["S2_conf"])
+
+        # Mask diagonal and lower triangle (undefined / mirror)
+        mask = np.tril(np.ones_like(S2, dtype=bool))
+        S2_plot = np.where(mask, np.nan, S2)
+
+        fig, axes = plt.subplots(1, 2, figsize=(14, 0.6 * n_params + 2))
+
+        meta  = f"{doc['case_study']} / {doc['learning']}  "
+        meta += f"N={doc['n_samples']}  seeds={doc['n_seeds']}"
+        fig.suptitle(f"S2 (second-order) — {_olabel(out_name)}\n{meta}",
+                     fontsize=10)
+
+        for ax, data, title in [
+            (axes[0], S2_plot,                    "S2  (second-order index)"),
+            (axes[1], np.where(mask, np.nan, S2_conf), "S2 confidence interval"),
+        ]:
+            vmax = np.nanmax(np.abs(data)) if not np.all(np.isnan(data)) else 1.0
+            im = ax.imshow(data, vmin=0, vmax=vmax, cmap="YlOrRd", aspect="auto")
+            ax.set_xticks(range(n_params))
+            ax.set_yticks(range(n_params))
+            ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=8)
+            ax.set_yticklabels(labels, fontsize=8)
+            ax.set_title(title, fontsize=9)
+            plt.colorbar(im, ax=ax, shrink=0.8)
+
+        plt.tight_layout()
+        fname = os.path.join(plots_dir, f"sobol_S2_{out_name}.png")
+        fig.savefig(fname, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  Saved: sobol_S2_{out_name}.png")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -199,6 +249,7 @@ def main():
 
     plot_individual(args.results, doc, plots_dir)
     plot_summary(args.results, doc, plots_dir)
+    plot_s2_heatmaps(doc, plots_dir)
 
     print(f"\nAll plots saved to: {plots_dir}")
 
