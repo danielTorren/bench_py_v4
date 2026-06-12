@@ -9,9 +9,9 @@ learning: Slow dynamics   # Slow dynamics | Fast dynamics | Informative | No lea
 memory: true
 
 n_households: 10000
-n_samples: 512            
-n_seeds: 32               
-calc_second_order: False
+n_samples: 1024            
+n_seeds: 64               
+calc_second_order: Yes
 n_jobs: -1
 
 output_dir: output
