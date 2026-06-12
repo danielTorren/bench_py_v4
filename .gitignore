@@ -12,6 +12,7 @@ sensitivty/results/
 
 # Virtual environments
 .venv
+.bench_v4_venv
 
 # === uv specific files ===
 # Keep uv.lock in version control! But ignore uv tracking/cache if generated locally.

@@ -12,10 +12,9 @@
 
 VENV_DIR="$HOME/bench_v4_venv"
 
-# Check available Python modules on the cluster with: module spider Python
-# Use the same version string in run_sa.slurm
 module purge
 module load Python/3.12.3-GCCcore-13.3.0
+module load SciPy-bundle/2024.05-gfbf-2024a   # provides numpy, scipy, pandas
 
 echo "Python version:"
 python --version
@@ -27,7 +26,9 @@ source "$VENV_DIR/bin/activate"
 
 echo "Installing dependencies..."
 pip install --upgrade pip --quiet
-pip install numpy pandas matplotlib pyyaml salib scipy
+# numpy, scipy, pandas come from the SciPy-bundle module — only install extras
+pip install matplotlib pyyaml salib joblib
+
 
 echo ""
 echo "===================================================="

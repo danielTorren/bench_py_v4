@@ -29,7 +29,7 @@ Usage examples
 Single run (verbose output):
     python main.py --case NL --learning Informative --seed 42 --verbose
 
-100-run ensemble (saves data + plots automatically):
+100-run ensemble (parallel, saves data + plots automatically):
     python main.py --case NL --learning Informative --runs 100
 
 Run all scenarios from a YAML config file:
@@ -37,6 +37,9 @@ Run all scenarios from a YAML config file:
 
 Custom output directory:
     python main.py --case ES --runs 50 --output-dir results
+
+Limit parallel workers:
+    python main.py --case NL --runs 100 --jobs 4
 
 Skip plotting (data only):
     python main.py --case NL --runs 20 --no-plot
@@ -47,6 +50,8 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
+
+from joblib import Parallel, delayed
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -69,9 +74,12 @@ def _make_config_dir(output_dir: str, label: str) -> str:
     return path
 
 
-def _run_single(case, learning, seed, memory, verbose):
+def _run_and_save(case, learning, seed, memory, run_label_i, runs_dir, verbose=False):
+    """Worker: run one model instance, save outputs, return the model."""
     model = BENCHv4(case_study=case, seed=seed, learning=learning, memory=memory)
     model.run(verbose=verbose)
+    run_dir = os.path.join(runs_dir, f"{run_label_i}_seed_{model.seed}")
+    save_run(model, run_dir)
     return model
 
 
@@ -89,18 +97,14 @@ def _print_mean_table(all_models, case, learning):
                 accum[f"dwage{cat}"][s.year].append(p)
 
     n = len(all_models)
-    #print(f"\nMean renovation rate  ({case} / {learning} / N={n} runs)")
-    #print(f"{'Year':>6}  {'All%':>7}  {'New%':>7}  {'Mid%':>7}  {'Old%':>7}")
     for yr in sorted(accum["all"].keys()):
         def m(key):
             v = accum[key][yr]
             return sum(v) / len(v) if v else 0.0
-        #print(f"{yr:>6}  {m('all'):>7.2f}  {m('dwage1'):>7.2f}  "
-        #      f"{m('dwage2'):>7.2f}  {m('dwage3'):>7.2f}")
 
 
 def _run_scenario(case, learning, runs, memory, output_dir,
-                  run_label, verbose, no_plot, timestamped=True):
+                  run_label, verbose, no_plot, n_jobs=-1, timestamped=True):
     """Execute one scenario (possibly many seed runs) and save outputs."""
     slug  = _LEARNING_SLUG.get(learning, learning.replace(" ", "_"))
     label = run_label if run_label else f"{case}_{slug}"
@@ -109,7 +113,7 @@ def _run_scenario(case, learning, runs, memory, output_dir,
     else:
         config_dir = os.path.join(output_dir, label)
         os.makedirs(config_dir, exist_ok=True)
-    runs_dir    = os.path.join(config_dir, "runs")
+    runs_dir = os.path.join(config_dir, "runs")
     os.makedirs(runs_dir, exist_ok=True)
 
     print(f"\n{'='*60}")
@@ -118,41 +122,31 @@ def _run_scenario(case, learning, runs, memory, output_dir,
     print(f"Output   : {config_dir}")
     print(f"{'='*60}")
 
-    single_run  = runs == 1
-    all_models  = []
+    single_run = runs == 1
 
-    for i in range(runs):
-        seed      = None   # always random for ensembles
-        run_label_i = f"run_{i+1:03d}"
+    if single_run:
+        model = _run_and_save(case, learning, None, memory, "run_001", runs_dir,
+                              verbose=verbose)
+        print(model.summary())
+        all_models = [model]
+    else:
+        worker_args = [
+            (case, learning, None, memory, f"run_{i+1:03d}", runs_dir)
+            for i in range(runs)
+        ]
+        all_models = Parallel(n_jobs=n_jobs)(
+            delayed(_run_and_save)(*arg) for arg in worker_args
+        )
 
-        model = _run_single(case, learning, seed, memory,
-                            verbose=verbose and single_run)
-        all_models.append(model)
-
-        run_dir = os.path.join(runs_dir, f"{run_label_i}_seed_{model.seed}")
-        save_run(model, run_dir)
-
-        if single_run:
-            print(model.summary())
-        else:
-            n_hh = len(model.households)
-            pct  = 100 * sum(s.n_renovated for s in model.history) / (
-                       n_hh * len(model.history)) if n_hh and model.history else 0
-            #print(f"  {run_label_i}  seed={model.seed}  "
-            #      f"mean_annual_renov={pct:.2f}%")
-
-    if not single_run:
-        _print_mean_table(all_models, case, learning)
+    _print_mean_table(all_models, case, learning)
 
     if not no_plot:
         try:
             from bench_v4.plotting import plot_all
-            #print("\nGenerating plots...")
             plot_all(config_dir)
         except ImportError as e:
             print(f"Plotting skipped (missing dependency: {e})")
 
-    #print(f"Done -> {config_dir}")
     return config_dir
 
 
@@ -180,6 +174,9 @@ def main():
                         help="Fixed random seed for a single run")
     parser.add_argument("--runs",      type=int, default=1,
                         help="Number of Monte Carlo runs  (default: 1)")
+    parser.add_argument("--jobs",      type=int, default=-1,
+                        help="Parallel workers for ensemble runs  "
+                             "(default: -1 = all available cores)")
     parser.add_argument("--no-memory", action="store_true",
                         help="Disable pre-2016 memory recall")
     parser.add_argument("--output-dir", default="output",
@@ -192,6 +189,8 @@ def main():
 
     memory = not args.no_memory
 
+    t0 = datetime.now()
+    
     if args.config:
         scenarios   = _load_yaml(args.config)
         config_stem = Path(args.config).stem
@@ -200,6 +199,7 @@ def main():
         print(f"Config run folder : {parent_dir}")
         print(f"Scenarios         : {len(scenarios)}")
         print(f"Total runs        : {total_runs}")
+        print(f"Jobs              : {args.jobs}  (-1 = all available cores)")
         for sc in scenarios:
             _run_scenario(
                 case       = sc.get("case_study", "NL"),
@@ -210,10 +210,10 @@ def main():
                 run_label  = sc.get("run_label", None),
                 verbose    = args.verbose,
                 no_plot    = args.no_plot,
+                n_jobs     = args.jobs,
                 timestamped= False,
             )
 
-        # multi-scenario comparison plots (all scenarios combined)
         if not args.no_plot:
             try:
                 from bench_v4.plotting import plot_multi_scenario
@@ -223,8 +223,8 @@ def main():
                 print(f"Multi-scenario plotting skipped (missing dependency: {e})")
 
         print(f"\nAll done.  Results in: {parent_dir}")
+
     else:
-        # honour --seed only for single runs (ignored for ensembles)
         single = args.runs == 1
         slug   = _LEARNING_SLUG.get(args.learning, args.learning.replace(" ", "_"))
         label  = f"{args.case}_{slug}"
@@ -233,44 +233,37 @@ def main():
         runs_dir   = os.path.join(config_dir, "runs")
         os.makedirs(runs_dir, exist_ok=True)
         print(f"Output folder: {config_dir}")
-
-        all_models = []
-        for i in range(args.runs):
-            seed        = args.seed if (single and args.seed is not None) else None
-            run_label_i = f"run_{i+1:03d}"
-
-            if args.verbose or single:
-                print(f"\n--- {run_label_i}/{args.runs}  case={args.case}  "
-                      f"learning={args.learning} ---")
-
-            model = _run_single(args.case, args.learning, seed, memory,
-                                verbose=args.verbose)
-            all_models.append(model)
-
-            run_dir = os.path.join(runs_dir, f"{run_label_i}_seed_{model.seed}")
-            save_run(model, run_dir)
-
-            if single:
-                print(model.summary())
-            else:
-                n_hh = len(model.households)
-                pct  = 100 * sum(s.n_renovated for s in model.history) / (
-                           n_hh * len(model.history)) if n_hh and model.history else 0
-                #print(f"  {run_label_i}  seed={model.seed}  "
-                #      f"mean_annual_renov={pct:.2f}%  -> {run_dir}")
-
         if not single:
-            _print_mean_table(all_models, args.case, args.learning)
+            print(f"Jobs         : {args.jobs}  (-1 = all available cores)")
+
+        if single:
+            seed  = args.seed
+            model = _run_and_save(args.case, args.learning, seed, memory,
+                                  "run_001", runs_dir, verbose=args.verbose)
+            print(model.summary())
+            all_models = [model]
+        else:
+            worker_args = [
+                (args.case, args.learning, None, memory, f"run_{i+1:03d}", runs_dir)
+                for i in range(args.runs)
+            ]
+            all_models = Parallel(n_jobs=args.jobs)(
+                delayed(_run_and_save)(*arg) for arg in worker_args
+            )
+
+        _print_mean_table(all_models, args.case, args.learning)
 
         if not args.no_plot:
             try:
                 from bench_v4.plotting import plot_all
-                #print("\nGenerating plots...")
                 plot_all(config_dir)
             except ImportError as e:
                 print(f"Plotting skipped (missing dependency: {e})")
 
         print(f"\nDone.  All results in: {config_dir}")
+    
+    elapsed = datetime.now() - t0
+    print(f"\nCompleted in {str(elapsed).split('.')[0]}")
 
 
 if __name__ == "__main__":
