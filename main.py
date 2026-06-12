@@ -74,9 +74,11 @@ def _make_config_dir(output_dir: str, label: str) -> str:
     return path
 
 
-def _run_and_save(case, learning, seed, memory, run_label_i, runs_dir, verbose=False):
+def _run_and_save(case, learning, seed, memory, run_label_i, runs_dir,
+                  verbose=False, n_households=None):
     """Worker: run one model instance, save outputs, return the model."""
-    model = BENCHv4(case_study=case, seed=seed, learning=learning, memory=memory)
+    model = BENCHv4(case_study=case, seed=seed, learning=learning, memory=memory,
+                    n_households=n_households)
     model.run(verbose=verbose)
     run_dir = os.path.join(runs_dir, f"{run_label_i}_seed_{model.seed}")
     save_run(model, run_dir)
@@ -104,7 +106,8 @@ def _print_mean_table(all_models, case, learning):
 
 
 def _run_scenario(case, learning, runs, memory, output_dir,
-                  run_label, verbose, no_plot, n_jobs=-1, timestamped=True):
+                  run_label, verbose, no_plot, n_jobs=-1, timestamped=True,
+                  n_households=None):
     """Execute one scenario (possibly many seed runs) and save outputs."""
     slug  = _LEARNING_SLUG.get(learning, learning.replace(" ", "_"))
     label = run_label if run_label else f"{case}_{slug}"
@@ -126,12 +129,13 @@ def _run_scenario(case, learning, runs, memory, output_dir,
 
     if single_run:
         model = _run_and_save(case, learning, None, memory, "run_001", runs_dir,
-                              verbose=verbose)
+                              verbose=verbose, n_households=n_households)
         print(model.summary())
         all_models = [model]
     else:
         worker_args = [
-            (case, learning, None, memory, f"run_{i+1:03d}", runs_dir)
+            (case, learning, None, memory, f"run_{i+1:03d}", runs_dir,
+             False, n_households)
             for i in range(runs)
         ]
         all_models = Parallel(n_jobs=n_jobs)(
@@ -177,6 +181,8 @@ def main():
     parser.add_argument("--jobs",      type=int, default=-1,
                         help="Parallel workers for ensemble runs  "
                              "(default: -1 = all available cores)")
+    parser.add_argument("--n-households", type=int, default=None,
+                        help="Synthetic population size (default: survey size ~759 NL / 793 ES)")
     parser.add_argument("--no-memory", action="store_true",
                         help="Disable pre-2016 memory recall")
     parser.add_argument("--output-dir", default="output",
@@ -202,16 +208,17 @@ def main():
         print(f"Jobs              : {args.jobs}  (-1 = all available cores)")
         for sc in scenarios:
             _run_scenario(
-                case       = sc.get("case_study", "NL"),
-                learning   = sc.get("learning", "Informative"),
-                runs       = sc.get("runs", 1),
-                memory     = sc.get("memory", True),
-                output_dir = parent_dir,
-                run_label  = sc.get("run_label", None),
-                verbose    = args.verbose,
-                no_plot    = args.no_plot,
-                n_jobs     = args.jobs,
-                timestamped= False,
+                case         = sc.get("case_study", "NL"),
+                learning     = sc.get("learning", "Informative"),
+                runs         = sc.get("runs", 1),
+                memory       = sc.get("memory", True),
+                output_dir   = parent_dir,
+                run_label    = sc.get("run_label", None),
+                verbose      = args.verbose,
+                no_plot      = args.no_plot,
+                n_jobs       = args.jobs,
+                timestamped  = False,
+                n_households = sc.get("n_households", args.n_households),
             )
 
         if not args.no_plot:
@@ -239,12 +246,14 @@ def main():
         if single:
             seed  = args.seed
             model = _run_and_save(args.case, args.learning, seed, memory,
-                                  "run_001", runs_dir, verbose=args.verbose)
+                                  "run_001", runs_dir, verbose=args.verbose,
+                                  n_households=args.n_households)
             print(model.summary())
             all_models = [model]
         else:
             worker_args = [
-                (args.case, args.learning, None, memory, f"run_{i+1:03d}", runs_dir)
+                (args.case, args.learning, None, memory, f"run_{i+1:03d}", runs_dir,
+                 False, args.n_households)
                 for i in range(args.runs)
             ]
             all_models = Parallel(n_jobs=args.jobs)(

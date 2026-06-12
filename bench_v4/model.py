@@ -137,11 +137,13 @@ class BENCHv4:
         memory: bool = True,
         investment: bool = True,
         data_dir: Optional[str] = None,
+        n_households: Optional[int] = None,
     ):
         self.case_study = case_study
         self.learning   = learning
         self.memory_on  = memory
         self.investment = investment
+        self.n_households = n_households or N_HOUSEHOLDS[case_study]
 
         # random seed
         if seed is None:
@@ -245,13 +247,12 @@ class BENCHv4:
 
     def _create_households(self) -> None:
         """
-        Create N_HOUSEHOLDS agents using empirical distributions.
+        Create n_households agents using empirical distributions.
         Mirrors the `create-turtles N [...]` block in NetLogo setup.
         """
         groups = ES_GROUPS if self.case_study == "ES" else NL_GROUPS
-        n_hh   = N_HOUSEHOLDS[self.case_study]
 
-        for hh_id in range(n_hh):
+        for hh_id in range(self.n_households):
             rn = random.uniform(0, 100)
             # find which income group this rn maps to
             for cum_upper, group_id, params in groups:
@@ -267,14 +268,19 @@ class BENCHv4:
 
     def _place_on_grid(self) -> None:
         """
-        Place agents on the NetLogo grid (GRID_MIN to GRID_MAX in both axes).
+        Place agents on a grid scaled to maintain the original agent density.
         Mirrors `setxy random-xcor random-ycor`.
         """
+        # Scale grid to preserve ~0.1 agents/cell regardless of n_households
+        scale = math.sqrt(self.n_households / N_HOUSEHOLDS[self.case_study])
+        half  = max(1, round((GRID_MAX - GRID_MIN) / 2 * scale))
+        self._grid_min = -half
+        self._grid_max =  half
+
         self._grid = {}
-        span = GRID_MAX - GRID_MIN + 1
         for hh in self.households:
-            hh.grid_x = random.randint(GRID_MIN, GRID_MAX)
-            hh.grid_y = random.randint(GRID_MIN, GRID_MAX)
+            hh.grid_x = random.randint(self._grid_min, self._grid_max)
+            hh.grid_y = random.randint(self._grid_min, self._grid_max)
             key = (hh.grid_x, hh.grid_y)
             if key not in self._grid:
                 self._grid[key] = []
@@ -283,8 +289,6 @@ class BENCHv4:
     def _get_patch_neighbors(self, hh: Household) -> List[Household]:
         """
         Return all turtles on the 8 adjacent patches (NetLogo neighbors).
-        Wrapping is NOT used here (no wrapping in view settings that affect
-        turtle placement — turtles stay within bounds).
         """
         result = []
         for dx in (-1, 0, 1):

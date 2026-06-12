@@ -137,11 +137,11 @@ def _extract_outputs(model):
 
 def _run_one(args):
     """Run a single (eval_idx, seed) model instance and return (eval_idx, outputs)."""
-    case_study, learning, memory, eval_idx, seed, param_names, param_row = args
+    case_study, learning, memory, eval_idx, seed, param_names, param_row, n_households = args
     pdict = dict(zip(param_names, param_row))
     with _patched(case_study, pdict):
         model = BENCHv4(case_study=case_study, learning=learning,
-                        memory=memory, seed=seed)
+                        memory=memory, seed=seed, n_households=n_households)
         model.run()
         return eval_idx, _extract_outputs(model)
 
@@ -203,6 +203,7 @@ def main():
     case_study   = cfg.get("case_study", "NL")
     learning     = cfg.get("learning", "Informative")
     memory       = cfg.get("memory", True)
+    n_households = cfg.get("n_households", None)
     n_samples    = cfg.get("n_samples", 64)
     n_seeds      = cfg.get("n_seeds", 5)
     calc_s2      = cfg.get("calc_second_order", False)
@@ -226,8 +227,9 @@ def main():
     n_eval = len(param_matrix)
     n_runs = n_eval * n_seeds
 
-    print(f"Sobol SA  : {case_study} / {learning}")
-    print(f"Parameters: {n_params}")
+    print(f"Sobol SA    : {case_study} / {learning}")
+    print(f"Households  : {n_households or 'survey default'}")
+    print(f"Parameters  : {n_params}")
     print(f"Evals     : {n_eval}  (n_samples={n_samples}, calc_second_order={calc_s2})")
     print(f"Seeds/eval: {n_seeds}")
     print(f"Total runs: {n_runs}  (parallelised over evals x seeds)")
@@ -250,7 +252,7 @@ def main():
     # --- Build flat worker arg list: one job per (eval_idx, seed) pair ---
     worker_args = [
         (case_study, learning, memory, i, i * n_seeds + s + 1,
-         param_names, param_matrix[i].tolist())
+         param_names, param_matrix[i].tolist(), n_households)
         for i in range(n_eval)
         for s in range(n_seeds)
     ]
