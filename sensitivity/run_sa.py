@@ -61,13 +61,15 @@ from bench_v4 import BENCHv4
 
 def _save_originals(case_study):
     return {
-        "guilt_thresh": _m.GUILT_THRESH[case_study],
-        "m1":           _m.MOTIVATION_THRESH[case_study]["m1"],
-        "m2":           _m.MOTIVATION_THRESH[case_study]["m2"],
-        "m3":           _m.MOTIVATION_THRESH[case_study]["m3"],
-        "pbc_invest":   _m.PBC_INVEST_THRESH[case_study],
-        "pbc_conserv":  _m.PBC_CONSERV_THRESH,
-        "pbc_switch":   _m.PBC_SWITCH_THRESH[case_study],
+        "guilt_thresh":  _m.GUILT_THRESH[case_study],
+        "m1":            _m.MOTIVATION_THRESH[case_study]["m1"],
+        "m2":            _m.MOTIVATION_THRESH[case_study]["m2"],
+        "m3":            _m.MOTIVATION_THRESH[case_study]["m3"],
+        "pbc_invest":    _m.PBC_INVEST_THRESH[case_study],
+        "pbc_conserv":   _m.PBC_CONSERV_THRESH,
+        "pbc_switch":    _m.PBC_SWITCH_THRESH[case_study],
+        "utility_coef":  dict(_m.UTILITY_COEF),   # shallow copy — dict is mutable
+        "learning_rate": _m.LEARNING_RATE,
     }
 
 
@@ -90,6 +92,13 @@ def _apply_params(case_study, pdict):
         _m.PBC_CONSERV_THRESH = pdict["pbc_conserv"]
     if "pbc_switch" in pdict:
         _m.PBC_SWITCH_THRESH[case_study] = pdict["pbc_switch"]
+    # Utility-function coefficients — patch in-place so model.UTILITY_COEF reflects change
+    for coef_key in ("dw_type", "dw_age", "edu", "pn1", "gas"):
+        param_name = f"coef_{coef_key}"
+        if param_name in pdict:
+            _m.UTILITY_COEF[coef_key] = pdict[param_name]
+    if "learning_rate" in pdict:
+        _m.LEARNING_RATE = pdict["learning_rate"]
 
 
 def _restore_originals(case_study, orig):
@@ -97,8 +106,10 @@ def _restore_originals(case_study, orig):
     for mkey in ("m1", "m2", "m3"):
         _m.MOTIVATION_THRESH[case_study][mkey] = orig[mkey]
     _m.PBC_INVEST_THRESH[case_study] = orig["pbc_invest"]
-    _m.PBC_CONSERV_THRESH           = orig["pbc_conserv"]
+    _m.PBC_CONSERV_THRESH            = orig["pbc_conserv"]
     _m.PBC_SWITCH_THRESH[case_study] = orig["pbc_switch"]
+    _m.UTILITY_COEF.update(orig["utility_coef"])
+    _m.LEARNING_RATE = orig["learning_rate"]
 
 
 @contextmanager

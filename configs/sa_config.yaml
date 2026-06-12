@@ -27,13 +27,13 @@ output_dir: output
 # NL base values are shown first; ES base values in parentheses.
 parameters:
   - name: guilt_thresh
-    bounds: [0.1, 6.9]       # base NL: 4.6  (ES: 5.2)
+    bounds: [1, 7]       # base NL: 4.6  (ES: 5.2)
 
   - name: motivation_m1_pn   # personal-norm threshold for investment motivation
-    bounds: [0.1, 6.9]       # base NL: 4.7  (ES: 5.67)
+    bounds: [1, 7]       # base NL: 4.7  (ES: 5.67)
 
   - name: motivation_m1_sn   # social-norm threshold for investment motivation
-    bounds: [0.1, 6.9]       # base NL: 3.5  (ES: 4.77)
+    bounds: [1, 7]       # base NL: 3.5  (ES: 4.77)
 
   - name: pbc_invest          # perceived-behavioural-control threshold for investment
-    bounds: [0.1, 6.9]       # base NL: 1.0  (ES: 2.2)
+    bounds: [1, 7]       # base NL: 1.0  (ES: 2.2)

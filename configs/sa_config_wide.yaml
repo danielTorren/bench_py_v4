@@ -1,0 +1,55 @@
+# Sobol sensitivity analysis — wide parameter sweep for BENCH v4
+# ---------------------------------------------------------------
+# Covers behavioural thresholds, utility-function coefficients, and
+# learning rate.  Designed to identify which parameters most strongly
+# drive renovation rate when applying the model to a new survey region.
+
+case_study: NL
+learning: Slow dynamics   # Slow dynamics | Fast dynamics | Informative | No learning
+memory: true
+
+n_households: 10000
+n_samples: 16            # scale up to 512+ for stable S2 indices
+n_seeds: 64               # seeds averaged per parameter set
+calc_second_order: False
+n_jobs: -1
+
+output_dir: output
+
+# ── Behavioural thresholds ─────────────────────────────────────────────────
+# All on the 1-7 Likert scale used in the survey.
+# NL calibrated values shown; ES values in parentheses.
+parameters:
+  - name: guilt_thresh          # awareness level that activates agents
+    bounds: [1, 7]          # base NL: 4.6  (ES: 5.2)
+
+  - name: motivation_m1_pn      # personal-norm threshold for investment motivation
+    bounds: [1, 7]          # base NL: 4.7  (ES: 5.67)
+
+  - name: motivation_m1_sn      # social-norm threshold for investment motivation
+    bounds: [1, 7]          # base NL: 3.5  (ES: 4.77)
+
+  - name: pbc_invest            # PBC threshold for investment consideration
+    bounds: [1, 7]          # base NL: 1.0  (ES: 2.2)
+
+# ── Utility-function coefficients (probit regression, Table 6) ─────────────
+# Re-estimated from the new regional survey; bounds span plausible range
+# across contexts based on Niamir et al. 2020 estimates.
+  - name: coef_dw_type          # apartment vs house (strongest predictor)
+    bounds: [0.10, 0.90]        # base: 0.4265
+
+  - name: coef_dw_age           # age of dwelling
+    bounds: [0.01, 0.50]        # base: 0.0883
+
+  - name: coef_edu              # education level of household head
+    bounds: [0.01, 0.50]        # base: 0.0563
+
+  - name: coef_pn1              # personal norms in utility
+    bounds: [0.01, 0.50]        # base: 0.0528
+
+  - name: coef_gas              # gas consumption (monetary/cost sensitivity)
+    bounds: [0.00001, 0.00050]  # base: 0.0000488
+
+# ── Learning ───────────────────────────────────────────────────────────────
+  - name: learning_rate         # per-tick update rate for social learning
+    bounds: [0.01, 0.50]        # base: 0.05  (not survey-estimated)
