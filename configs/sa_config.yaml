@@ -15,8 +15,8 @@ learning: Slow dynamics # Slow dynamics | Fast dynamics | Informative | No learn
 memory: true
 
 n_households: 10000    # synthetic population size (default: survey size ~759/793)
-n_samples: 1024         # SALib base sample count N
-n_seeds: 64            # random seeds averaged per parameter set
+n_samples: 256           # number of parameter sets sampled by Sobol method; increase for more stable indices
+n_seeds: 32              # seeds averaged per parameter set; increase for more stable indices
 calc_second_order: true
 n_jobs: -1             # parallel workers: -1 = all available cores, or set a fixed number
 
