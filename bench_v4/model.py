@@ -64,10 +64,23 @@ def _load_cge(filepath: str) -> List[float]:
 
 
 def _max_mean_median_arr(arr: np.ndarray) -> float:
-    """max(mean, median) — mirrors NetLogo: max list mean median."""
-    if len(arr) == 0:
+    """max(mean, median) — mirrors NetLogo: max list mean median.
+
+    Pure-Python path for the tiny arrays (0–8 elements) produced by patch
+    neighbour lookups.  Avoids the ~15 µs per-call overhead of np.median on
+    small inputs, which dominates runtime when called ~160k times per run.
+    """
+    n = len(arr)
+    if n == 0:
         return 0.0
-    return max(float(np.mean(arr)), float(np.median(arr)))
+    vals = arr.tolist()          # one fast C-level copy out of numpy
+    mean = sum(vals) / n
+    if n == 1:
+        return mean              # mean == median for a single element
+    vals.sort()
+    mid = n >> 1
+    median = vals[mid] if n & 1 else (vals[mid - 1] + vals[mid]) * 0.5
+    return mean if mean >= median else median
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +154,9 @@ class BENCHv4:
             seed = 1
         self.seed = seed
         random.seed(seed)
+        # Separate numpy RNG for vectorised dwelling updates (keeps Python
+        # random state clean for recall_memory reproducibility)
+        self._np_rng = np.random.default_rng(seed)
 
         if data_dir is None:
             here = Path(__file__).parent.parent
@@ -364,14 +380,9 @@ class BENCHv4:
         dw_table = DWAGE_UPDATE.get(self.case_study, {})
         for (yr_lo, yr_hi), (p_new, p_mid) in dw_table.items():
             if yr_lo <= self.year < yr_hi:
-                for i in range(self.n_households):
-                    dag = random.uniform(0, 100)
-                    if dag < p_new:
-                        self._dw_age[i] = 1
-                    elif dag < p_mid:
-                        self._dw_age[i] = 2
-                    else:
-                        self._dw_age[i] = 3
+                dag = self._np_rng.uniform(0, 100, self.n_households)
+                self._dw_age[:] = np.where(dag < p_new, 1,
+                                  np.where(dag < p_mid,  2, 3))
                 break
 
     def _knowledge(self) -> None:
