@@ -15,7 +15,7 @@ def save_run(model, run_dir: str) -> None:
 
 def _save_annual_results(model, run_dir: str) -> None:
     path = os.path.join(run_dir, "annual_results.csv")
-    n_hh = len(model.households)
+    n_hh = model.n_households
     cum = {1: 0.0, 2: 0.0, 3: 0.0}
 
     with open(path, "w", newline="") as f:
@@ -77,7 +77,7 @@ def _save_run_config(model, run_dir: str) -> None:
         "case_study":    model.case_study,
         "learning":      model.learning,
         "seed":          model.seed,
-        "n_households":  len(model.households),
+        "n_households":  model.n_households,
         "memory":        model.memory_on,
         "start_year":    model.history[0].year  if model.history else None,
         "end_year":      model.history[-1].year if model.history else None,

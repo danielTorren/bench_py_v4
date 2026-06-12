@@ -89,7 +89,7 @@ def _print_mean_table(all_models, case, learning):
     from collections import defaultdict
     accum = defaultdict(lambda: defaultdict(list))
     for model in all_models:
-        n_hh = len(model.households)
+        n_hh = model.n_households
         for s in model.history:
             pct = 100 * s.n_renovated / n_hh if n_hh else 0
             accum["all"][s.year].append(pct)

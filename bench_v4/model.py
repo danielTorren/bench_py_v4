@@ -1,35 +1,35 @@
 """
 BENCH v4 — Python translation of BENCH_v04_B-NLD.ESP.nlogox.
+Vectorized: agent attributes stored as numpy arrays; per-agent loops replaced
+with array operations.  Random draws that affect seed-reproducibility still
+use Python's random module (same call sequence as the original model).
 
-The go() method follows the NetLogo procedure bodies in order:
-    tick
-    recallmemory
-    update.info      -> _update_info
-    update.dwelling  -> _update_dwelling
-    knowledge        -> _knowledge
-    motivation       -> _motivation
-    consideration    -> _consideration
-    utility          -> _utility
-    action           -> _action
-    save.energy      -> _save_energy
-    invest           -> _invest
-    learn            -> _learn
-    update.income    -> _update_income
-    update.energy    -> _update_energy
-    update.memory    -> _update_memory
-    year += 1, n += 1
-
-All thresholds and empirical parameters live in params.py.
+go() procedure order (unchanged from NetLogo):
+    update.info     → _update_info
+    recallmemory    → _recall_memory
+    update.dwelling → _update_dwelling
+    knowledge       → _knowledge
+    motivation      → _motivation
+    consideration   → _consideration
+    utility         → _utility
+    action          → _action
+    save.energy     → _save_energy   (year >= 2017)
+    invest          → _invest        (year >= 2017)
+    learn           → _learn         (year >= 2017)
+    update.income   → _update_income
+    update.energy   → _update_energy (year >= 2017)
+    update.memory   → _update_memory
 """
 
 import csv
 import math
 import os
 import random
-import statistics
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+import numpy as np
 
 from .household import Household
 from .params import (
@@ -45,13 +45,15 @@ from .params import (
     GRID_MIN, GRID_MAX,
 )
 
+# Cooldown lookup indexed by dw_age value (1→15, 2→7, 3→2; index 0 unused)
+_COOLDOWN_LUT = np.array([0, 15, 7, 2], dtype=np.int32)
+
 
 # ---------------------------------------------------------------------------
-# Small helpers
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _load_cge(filepath: str) -> List[float]:
-    """Load a single-column CGE CSV into a list of floats."""
     values = []
     with open(filepath, newline="") as f:
         reader = csv.reader(f)
@@ -61,21 +63,11 @@ def _load_cge(filepath: str) -> List[float]:
     return values
 
 
-def _mean(vals):
-    return sum(vals) / len(vals) if vals else 0.0
-
-
-def _median(vals):
-    if not vals:
-        return 0.0
-    return statistics.median(vals)
-
-
-def _max_mean_median(vals):
+def _max_mean_median_arr(arr: np.ndarray) -> float:
     """max(mean, median) — mirrors NetLogo: max list mean median."""
-    if not vals:
+    if len(arr) == 0:
         return 0.0
-    return max(_mean(vals), _median(vals))
+    return max(float(np.mean(arr)), float(np.median(arr)))
 
 
 # ---------------------------------------------------------------------------
@@ -116,17 +108,17 @@ class AnnualStats:
 
 class BENCHv4:
     """
-    Python translation of BENCH NetLogo v4 (renovation/insulation module).
+    Vectorized BENCH v4 (renovation/insulation module).
 
     Parameters
     ----------
     case_study : "ES" (Spain-Navarre) | "NL" (Netherlands-Overijssel)
-    seed       : random seed; None = generate new seed
+    seed       : random seed; None → 1
     learning   : "Slow dynamics" | "Fast dynamics" | "Informative" | "No learning"
     memory     : True/False — apply recall of pre-2016 renovations in first tick
     investment : True/False — whether Investment behaviour is enabled
     data_dir   : path to folder containing the CGE CSV files
-                 (defaults to the netlogo/ subfolder next to this package)
+    n_households : synthetic population size (None → survey default)
     """
 
     def __init__(
@@ -139,39 +131,28 @@ class BENCHv4:
         data_dir: Optional[str] = None,
         n_households: Optional[int] = None,
     ):
-        self.case_study = case_study
-        self.learning   = learning
-        self.memory_on  = memory
-        self.investment = investment
+        self.case_study  = case_study
+        self.learning    = learning
+        self.memory_on   = memory
+        self.investment  = investment
         self.n_households = n_households or N_HOUSEHOLDS[case_study]
 
-        # random seed
         if seed is None:
             seed = 1
         self.seed = seed
         random.seed(seed)
 
-        # data directory
         if data_dir is None:
             here = Path(__file__).parent.parent
             data_dir = str(here / "data")
         self.data_dir = data_dir
 
-        # simulation state
         self.year: int = START_YEAR
-        self.n:    int = 0          # CGE time index, mirrors NetLogo's n global
+        self.n:    int = 0
 
-        # households and grid
-        self.households: List[Household] = []
-        self._grid: Dict[Tuple[int, int], List[Household]] = {}
-
-        # CGE income growth series
+        self.households: List[Household] = []  # populated during setup, then cleared
         self.cge: List[float] = []
-
-        # results
         self.history: List[AnnualStats] = []
-
-        # cumulative action counters (mirroring a1.com etc.)
         self.a1_cum: int = 0
 
     # ------------------------------------------------------------------
@@ -181,27 +162,22 @@ class BENCHv4:
     def setup(self) -> None:
         """Initialise households, grid and load data (mirrors NetLogo setup)."""
         self._load_data()
-        self._create_households()
-        self._place_on_grid()
+        self._create_households()   # Household objects drawn via Python random
+        self._place_on_grid()       # grid positions drawn via Python random
+        self._init_arrays()         # extract to numpy, build spatial index, free objects
 
     def go(self) -> bool:
-        """
-        Execute one simulation tick (one calendar year).
-        Returns False when the model should stop (year > END_YEAR).
-        """
+        """Execute one simulation tick (one calendar year).  Returns False when done."""
         if self.year > END_YEAR:
             return False
 
-        # --- NetLogo go procedure body ---
         self._update_info()
-        self._recall_memory()      # only acts in year == START_YEAR if memory_on
+        self._recall_memory()
         self._update_dwelling()
 
-        # behavioural pipeline (COM = True by default in v4)
         self._knowledge()
         self._motivation()
         self._consideration()
-
         self._utility()
         self._action()
 
@@ -215,7 +191,6 @@ class BENCHv4:
             self._update_energy()
         self._update_memory()
 
-        # collect stats before incrementing year
         self.history.append(self._collect_stats())
 
         self.year += 1
@@ -228,7 +203,7 @@ class BENCHv4:
         while self.go():
             if verbose:
                 last = self.history[-1]
-                pct_renov = 100 * last.n_renovated / len(self.households) if self.households else 0
+                pct_renov = 100 * last.n_renovated / self.n_households
                 print(
                     f"  year={last.year}  renovated={last.n_renovated} "
                     f"({pct_renov:.1f}%)  gas_saved={last.total_gas_saved:.0f}"
@@ -236,48 +211,39 @@ class BENCHv4:
         return self.history
 
     # ------------------------------------------------------------------
-    # Initialisation helpers
+    # Initialisation
     # ------------------------------------------------------------------
 
     def _load_data(self) -> None:
-        groups = ES_GROUPS if self.case_study == "ES" else NL_GROUPS
-        fname  = CGE_FILES[self.case_study]
-        fpath  = os.path.join(self.data_dir, fname)
+        fname = CGE_FILES[self.case_study]
+        fpath = os.path.join(self.data_dir, fname)
         self.cge = _load_cge(fpath)
 
     def _create_households(self) -> None:
-        """
-        Create n_households agents using empirical distributions.
-        Mirrors the `create-turtles N [...]` block in NetLogo setup.
-        """
+        """Create n_households agents using empirical distributions."""
         groups = ES_GROUPS if self.case_study == "ES" else NL_GROUPS
-
         for hh_id in range(self.n_households):
             rn = random.uniform(0, 100)
-            # find which income group this rn maps to
             for cum_upper, group_id, params in groups:
                 if rn < cum_upper:
-                    hh = Household(hh_id, self.case_study, rn, params, group_id)
-                    self.households.append(hh)
+                    self.households.append(
+                        Household(hh_id, self.case_study, rn, params, group_id)
+                    )
                     break
             else:
-                # rn == 100 edge case: assign last group
                 _, group_id, params = groups[-1]
-                hh = Household(hh_id, self.case_study, rn, params, group_id)
-                self.households.append(hh)
+                self.households.append(
+                    Household(hh_id, self.case_study, rn, params, group_id)
+                )
 
     def _place_on_grid(self) -> None:
-        """
-        Place agents on a grid scaled to maintain the original agent density.
-        Mirrors `setxy random-xcor random-ycor`.
-        """
-        # Scale grid to preserve ~0.1 agents/cell regardless of n_households
+        """Place agents on a scaled grid that preserves the original agent density."""
         scale = math.sqrt(self.n_households / N_HOUSEHOLDS[self.case_study])
         half  = max(1, round((GRID_MAX - GRID_MIN) / 2 * scale))
         self._grid_min = -half
         self._grid_max =  half
 
-        self._grid = {}
+        self._grid: Dict[Tuple[int, int], List[Household]] = {}
         for hh in self.households:
             hh.grid_x = random.randint(self._grid_min, self._grid_max)
             hh.grid_y = random.randint(self._grid_min, self._grid_max)
@@ -286,369 +252,350 @@ class BENCHv4:
                 self._grid[key] = []
             self._grid[key].append(hh)
 
-    def _get_patch_neighbors(self, hh: Household) -> List[Household]:
-        """
-        Return all turtles on the 8 adjacent patches (NetLogo neighbors).
-        """
-        result = []
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                if dx == 0 and dy == 0:
-                    continue
-                key = (hh.grid_x + dx, hh.grid_y + dy)
-                result.extend(self._grid.get(key, []))
-        return result
+    def _init_arrays(self) -> None:
+        """Extract household attributes to numpy arrays, build spatial index, free objects."""
+        hhs = self.households
+        N   = self.n_households
+
+        # --- Demographics ---
+        self._h_group = np.array([h.h_group for h in hhs], dtype=np.int8)
+        self._income  = np.array([h.income  for h in hhs], dtype=np.float64)
+        self._gas     = np.array([h.gas     for h in hhs], dtype=np.float64)
+        self._edu     = np.array([h.edu     for h in hhs], dtype=np.int8)
+        self._age     = np.array([h.age     for h in hhs], dtype=np.int8)
+        self._dw_st   = np.array([h.dw_st   for h in hhs], dtype=np.int8)
+        self._dw_elab = np.array([h.dw_elab for h in hhs], dtype=np.int8)
+        self._dw_type = np.array([h.dw_type for h in hhs], dtype=np.int8)
+        self._dw_age  = np.array([h.dw_age  for h in hhs], dtype=np.int8)
+        self._dw_size = np.array([h.dw_size for h in hhs], dtype=np.int8)
+
+        # --- Awareness / knowledge ---
+        self._know   = np.array([h.know   for h in hhs], dtype=np.float64)
+        self._cee_aw = np.array([h.cee_aw for h in hhs], dtype=np.float64)
+        self._ed_aw  = np.array([h.ed_aw  for h in hhs], dtype=np.float64)
+        self._aware  = np.zeros(N, dtype=np.float64)
+        self._k      = np.zeros(N, dtype=np.float64)
+
+        # --- Behavioral norms / PBC (N, 3) ---
+        self._pn    = np.array([[h.pn[j]    for j in range(3)] for h in hhs], dtype=np.float64)
+        self._sn    = np.array([[h.sn[j]    for j in range(3)] for h in hhs], dtype=np.float64)
+        self._pbcI  = np.array([[h.pbcI[j]  for j in range(3)] for h in hhs], dtype=np.float64)
+        self._pbcC  = np.array([[h.pbcC[j]  for j in range(3)] for h in hhs], dtype=np.float64)
+        self._pbcS  = np.array([[h.pbcS[j]  for j in range(3)] for h in hhs], dtype=np.float64)
+        self._ene_pat = np.array([[h.ene_pat[j] for j in range(3)] for h in hhs], dtype=np.float64)
+        self._erI   = np.array([[h.erI[j]   for j in range(3)] for h in hhs], dtype=np.float64)
+
+        # --- Utility ---
+        self._U1 = np.zeros(N, dtype=np.float64)
+
+        # --- Status flags (bool; True ≡ "H") ---
+        # Only updated when the preceding condition is met (sticky between ticks)
+        self._guilt = np.zeros(N,      dtype=bool)
+        self._m_st  = np.zeros((N, 3), dtype=bool)
+        self._cI_st = np.zeros((N, 3), dtype=bool)
+        self._cC_st = np.zeros((N, 3), dtype=bool)
+        self._cS_st = np.zeros((N, 3), dtype=bool)
+
+        # --- Actions ---
+        self._act1      = np.zeros(N, dtype=bool)
+        self._invest1   = np.zeros(N, dtype=bool)
+        self._act1_year = np.zeros(N, dtype=np.int32)
+        # h_sta flags — insulated is set in recall_memory and never reset
+        self._insulated = np.zeros(N, dtype=bool)
+        self._efficient = np.zeros(N, dtype=bool)
+
+        # --- Energy / investment tallies (only channel 0 active in v4) ---
+        self._save_a0 = np.zeros(N, dtype=np.float64)
+        self._invs_a0 = np.zeros(N, dtype=np.float64)
+
+        # --- Spatial ---
+        self._grid_x = np.array([h.grid_x for h in hhs], dtype=np.int32)
+        self._grid_y = np.array([h.grid_y for h in hhs], dtype=np.int32)
+
+        self._build_neighbor_index()
+
+        # Free Household objects and the temporary grid dict
+        self.households = []
+        self._grid = {}
+
+    def _build_neighbor_index(self) -> None:
+        """Precompute _nbr_idx[i] = array of agent indices on the 8 adjacent patches."""
+        grid_dict: Dict[Tuple[int, int], List[int]] = {}
+        for i in range(self.n_households):
+            key = (int(self._grid_x[i]), int(self._grid_y[i]))
+            if key not in grid_dict:
+                grid_dict[key] = []
+            grid_dict[key].append(i)
+
+        self._nbr_idx: List[np.ndarray] = []
+        for i in range(self.n_households):
+            gx, gy = int(self._grid_x[i]), int(self._grid_y[i])
+            nbrs: List[int] = []
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    if dx == 0 and dy == 0:
+                        continue
+                    nbrs.extend(grid_dict.get((gx + dx, gy + dy), []))
+            self._nbr_idx.append(np.array(nbrs, dtype=np.int32))
 
     # ------------------------------------------------------------------
-    # go procedure sub-routines (in order of execution)
+    # go() sub-routines (in order of execution)
     # ------------------------------------------------------------------
 
     def _update_info(self) -> None:
-        """reset act1 to False each tick — mirrors update.info"""
-        for hh in self.households:
-            hh.act1 = False
+        """Reset act1 each tick."""
+        self._act1[:] = False
 
     def _recall_memory(self) -> None:
-        """
-        Assign historical renovation status to some households in the first
-        year.  Mirrors the recallmemory procedure.
-        """
+        """Assign historical renovation status to some households in the first year."""
         if self.year != START_YEAR or not self.memory_on:
             return
-
         recall_probs = RECALL_PROB[self.case_study]
-
-        for hh in self.households:
-            # NetLogo maps groups 5-7 all to prob[5]
-            g = hh.h_group if hh.h_group <= 4 else 5
-            p = recall_probs.get(g, 0.0)
-            aa = random.uniform(0, 100)
-            if aa <= p:
-                hh.act1    = True
-                hh.invest1 = True
-                hh.h_sta   = "insulated"
+        for i in range(self.n_households):
+            g_key = min(int(self._h_group[i]), 5)
+            p = recall_probs.get(g_key, 0.0)
+            if random.uniform(0, 100) <= p:
+                self._act1[i]      = True
+                self._invest1[i]   = True
+                self._insulated[i] = True
 
     def _update_dwelling(self) -> None:
-        """
-        Probabilistically update dw_age from MESSAGEix-Buildings inputs
-        from 2025 onwards.  Mirrors update.dwelling.
-        """
+        """Probabilistically update dw_age from 2025 onwards."""
         dw_table = DWAGE_UPDATE.get(self.case_study, {})
         for (yr_lo, yr_hi), (p_new, p_mid) in dw_table.items():
             if yr_lo <= self.year < yr_hi:
-                for hh in self.households:
+                for i in range(self.n_households):
                     dag = random.uniform(0, 100)
                     if dag < p_new:
-                        hh.dw_age = 1
+                        self._dw_age[i] = 1
                     elif dag < p_mid:
-                        hh.dw_age = 2
+                        self._dw_age[i] = 2
                     else:
-                        hh.dw_age = 3
-                break   # only one band applies per year
+                        self._dw_age[i] = 3
+                break
 
     def _knowledge(self) -> None:
-        """
-        Compute awareness and guilt.  Mirrors knowledge procedure.
-            aware = (know + cee.aw + ed.aw) / 3
-            guilt threshold: NL=4.6, ES=5.2
-            k = aware / 7  if guilt == "H"
-        """
+        """Compute awareness and guilt; mirrors knowledge procedure."""
         thresh = GUILT_THRESH[self.case_study]
-        for hh in self.households:
-            hh.aware = (hh.know + hh.cee_aw + hh.ed_aw) / 3.0
-            hh.guilt = "H" if hh.aware >= thresh else "L"
-            hh.k     = (hh.aware / 7.0) if hh.guilt == "H" else 0.0
+        self._aware = (self._know + self._cee_aw + self._ed_aw) / 3.0
+        self._guilt = self._aware >= thresh
+        self._k     = np.where(self._guilt, self._aware / 7.0, 0.0)
 
     def _motivation(self) -> None:
-        """
-        Set m_st[0/1/2] to "H" or "L" based on pn and sn vs thresholds.
-        Only households with guilt="H" proceed.  Mirrors motivation procedure.
-        """
-        thresholds = MOTIVATION_THRESH[self.case_study]
-        pn1_thr, sn1_thr = thresholds["m1"]
-        pn2_thr, sn2_thr = thresholds["m2"]
-        pn3_thr, sn3_thr = thresholds["m3"]
-        for hh in self.households:
-            if hh.guilt != "H":
-                continue
-            hh.m_st[0] = "H" if (hh.pn[0] >= pn1_thr and hh.sn[0] >= sn1_thr) else "L"
-            hh.m_st[1] = "H" if (hh.pn[1] >= pn2_thr and hh.sn[1] >= sn2_thr) else "L"
-            hh.m_st[2] = "H" if (hh.pn[2] >= pn3_thr and hh.sn[2] >= sn3_thr) else "L"
+        """Set m_st to H/L for guilty households; non-guilty households retain prior value."""
+        thr = MOTIVATION_THRESH[self.case_study]
+        pn1_thr, sn1_thr = thr["m1"]
+        pn2_thr, sn2_thr = thr["m2"]
+        pn3_thr, sn3_thr = thr["m3"]
+        g = self._guilt
+        self._m_st[g, 0] = (self._pn[g, 0] >= pn1_thr) & (self._sn[g, 0] >= sn1_thr)
+        self._m_st[g, 1] = (self._pn[g, 1] >= pn2_thr) & (self._sn[g, 1] >= sn2_thr)
+        self._m_st[g, 2] = (self._pn[g, 2] >= pn3_thr) & (self._sn[g, 2] >= sn3_thr)
 
     def _consideration(self) -> None:
         """
-        Evaluate perceived-behavioural-control constraints.
-        Mirrors consideration procedure.
-
-        Investment (cI_st):
-            NL: pbcI1 >= 1 AND dw_st==1 (owner)
-            ES: pbcI1 >= 2.2 AND dw_st==1
-        Conservation (cC_st):
-            pbcC1 >= 1 AND ene_pat != 3 (not "almost always efficient")
-        Switching (cS_st):
-            NL: pbcS1 >= 1   ES: pbcS1 >= 3.5  (only if currently grey or brown)
+        Evaluate PBC constraints for each behaviour.
+        Only updates households whose motivation status is H;
+        others retain their prior consideration status (sticky).
         """
         pbc_inv = PBC_INVEST_THRESH[self.case_study]
         pbc_sw  = PBC_SWITCH_THRESH[self.case_study]
+        owner   = self._dw_st == 1
 
-        for hh in self.households:
-            # investment — requires motivation m_st[0]=="H"
-            if self.investment and hh.m_st[0] == "H":
-                owner = (hh.dw_st == 1)
-                for i in range(3):
-                    if hh.pbcI[i] >= pbc_inv and owner:
-                        hh.cI_st[i] = "H"
-                    else:
-                        hh.cI_st[i] = "L"
-            # conservation — m_st[1]=="H"
-            if hh.m_st[1] == "H":
-                for i in range(3):
-                    if hh.pbcC[i] >= PBC_CONSERV_THRESH and hh.ene_pat[i] != 3:
-                        hh.cC_st[i] = "H"
-                    else:
-                        hh.cC_st[i] = "L"
-            # switching — m_st[2]=="H"
-            if hh.m_st[2] == "H":
-                for i in range(3):
-                    if hh.pbcS[i] >= pbc_sw:
-                        hh.cS_st[i] = "H"
-                    else:
-                        hh.cS_st[i] = "L"
+        # Investment: update only where m1 is H
+        if self.investment:
+            m = self._m_st[:, 0]
+            for j in range(3):
+                self._cI_st[m, j] = (self._pbcI[m, j] >= pbc_inv) & owner[m]
+
+        # Conservation: update only where m2 is H
+        m = self._m_st[:, 1]
+        for j in range(3):
+            self._cC_st[m, j] = (
+                (self._pbcC[m, j] >= PBC_CONSERV_THRESH) &
+                (self._ene_pat[m, j] != 3)
+            )
+
+        # Switching: update only where m3 is H
+        m = self._m_st[:, 2]
+        for j in range(3):
+            self._cS_st[m, j] = self._pbcS[m, j] >= pbc_sw
 
     def _utility(self) -> None:
-        """
-        Calculate renovation utility U1 for eligible households.
-        Mirrors utility procedure:
-            if cI1.st == "L": U1 = 0
-            if cI1.st == "H":
-                U1 = edu*0.0563284 + age*0.0008106 + dw_elab*(-0.0769971)
-                   + dw_type*0.4265 + dw_age*0.0883428 + dw_size*0.0857047
-                   + gas*0.0000488 + pn1*0.052849 + erI1
-        """
+        """Calculate renovation utility U1; zero for non-eligible households."""
         c = UTILITY_COEF
-        for hh in self.households:
-            if hh.cI_st[0] != "H":
-                hh.U1 = 0.0
-            else:
-                hh.U1 = (
-                    hh.edu      * c["edu"]
-                    + hh.age    * c["age"]
-                    + hh.dw_elab * c["dw_elab"]
-                    + hh.dw_type * c["dw_type"]
-                    + hh.dw_age  * c["dw_age"]
-                    + hh.dw_size * c["dw_size"]
-                    + hh.gas     * c["gas"]
-                    + hh.pn[0]   * c["pn1"]
-                    + hh.erI[0]
-                )
+        self._U1[:] = 0.0
+        mask = self._cI_st[:, 0]
+        self._U1[mask] = (
+              self._edu[mask].astype(np.float64)      * c["edu"]
+            + self._age[mask].astype(np.float64)      * c["age"]
+            + self._dw_elab[mask].astype(np.float64)  * c["dw_elab"]
+            + self._dw_type[mask].astype(np.float64)  * c["dw_type"]
+            + self._dw_age[mask].astype(np.float64)   * c["dw_age"]
+            + self._dw_size[mask].astype(np.float64)  * c["dw_size"]
+            + self._gas[mask]    * c["gas"]
+            + self._pn[mask, 0]  * c["pn1"]
+            + self._erI[mask, 0]
+        )
 
     def _action(self) -> None:
-        """
-        Decide whether to renovate.  Mirrors action procedure:
-            if U1 <= 0 or invest1==True or h_sta=="insulated": act1 = False
-            if U1 > 0 and invest1==False and dw_elab > 1:      act1 = True, invest1 = True
-        """
-        for hh in self.households:
-            if hh.U1 <= 0 or hh.invest1 or hh.h_sta == "insulated":
-                hh.act1 = False
-            elif hh.U1 > 0 and not hh.invest1 and hh.dw_elab > 1:
-                hh.act1    = True
-                hh.invest1 = True
-
-        # cumulative counter
-        self.a1_cum += sum(1 for hh in self.households if hh.act1)
+        """Decide whether to renovate; mirrors action procedure."""
+        eligible = (
+            (self._U1 > 0)
+            & ~self._invest1
+            & ~self._insulated
+            & (self._dw_elab > 1)
+        )
+        self._act1     = eligible
+        self._invest1 |= eligible
+        self.a1_cum   += int(np.sum(eligible))
 
     def _save_energy(self) -> None:
-        """
-        Calculate and apply gas savings for renovating households.
-        Mirrors save.energy procedure (only from year >= 2017):
-            save.a1 = gas * 0.20
-            gas = gas - save.a1
-        """
-        for hh in self.households:
-            if hh.act1:
-                hh.save_a[0] = hh.gas * GAS_SAVE_FRACTION
-                hh.gas       = hh.gas - hh.save_a[0]
-            else:
-                hh.save_a[0] = 0.0
+        """Calculate gas savings for renovating households."""
+        self._save_a0[:] = 0.0
+        m = self._act1
+        self._save_a0[m] = self._gas[m] * GAS_SAVE_FRACTION
+        self._gas[m]    -= self._save_a0[m]
 
     def _invest(self) -> None:
-        """
-        Record investment cost for renovating households.
-        Mirrors invest procedure (only from year >= 2017):
-            invs.a1 = I1.cost  if act1 == True
-        """
-        for hh in self.households:
-            hh.invs_a[0] = I1_COST if hh.act1 else 0.0
+        """Record investment cost for renovating households."""
+        self._invs_a0[:] = 0.0
+        self._invs_a0[self._act1] = I1_COST
 
     def _learn(self) -> None:
         """
         Social learning and information diffusion.
-        Mirrors learn procedure (only from year >= 2017).
 
-        Slow dynamics:
-            Active households (act1 OR invest1):
-                1. Self-boost pbcI[0] by 5% (capped at 6.6)
-                2. For each neighbor, let neighbor compute their own
-                   neighborhood stats.
-                3. If the active hh has > 4 patch-neighbors, each of
-                   those neighbors updates know/cee_aw/ed_aw/pn1/sn1/pbcI1.
-
-        Fast dynamics:
-            Same as Slow but the update happens inside the neighbor loop
-            regardless of the >4 count check.
-
-        Informative:
-            ALL households get +5% to know, cee_aw, ed_aw (capped).
-            Active households additionally trigger neighbor social learning
-            (same logic as Fast dynamics).
+        Informative: broadcast +5% knowledge boost to all households.
+        Slow/Fast/Informative social: active households (act1 OR invest1)
+            boost their spatial neighbours.  Slow requires >4 neighbours;
+            Fast and Informative update regardless of count.
         """
         if self.learning == "No learning":
             return
 
-        # Informative: broadcast knowledge boost to all households first
+        lc = LEARNING_CAP
+        lr = LEARNING_RATE
+
+        # Informative broadcast to all households
         if self.learning == "Informative":
-            for hh in self.households:
-                if hh.know   <= LEARNING_CAP:
-                    hh.know   = min(hh.know   + hh.know   * LEARNING_RATE, LEARNING_CAP + LEARNING_RATE)
-                if hh.cee_aw <= LEARNING_CAP:
-                    hh.cee_aw = min(hh.cee_aw + hh.cee_aw * LEARNING_RATE, LEARNING_CAP + LEARNING_RATE)
-                if hh.ed_aw  <= LEARNING_CAP:
-                    hh.ed_aw  = min(hh.ed_aw  + hh.ed_aw  * LEARNING_RATE, LEARNING_CAP + LEARNING_RATE)
+            for arr in (self._know, self._cee_aw, self._ed_aw):
+                m = arr <= lc
+                arr[m] = np.minimum(arr[m] * (1.0 + lr), lc + lr)
 
-        # Social learning: active households influence neighbors
-        for hh in self.households:
-            if not (hh.act1 or hh.invest1):
+        # Social learning from active households to their neighbours
+        active_idx = np.where(self._act1 | self._invest1)[0]
+        slow = (self.learning == "Slow dynamics")
+
+        for i in active_idx:
+            # Self-boost pbcI[0]
+            if self._pbcI[i, 0] < lc:
+                self._pbcI[i, 0] = min(float(self._pbcI[i, 0]) * (1.0 + lr), lc)
+
+            nbrs = self._nbr_idx[i]
+            if len(nbrs) == 0:
                 continue
 
-            # Self: boost pbcI1 if below cap
-            if hh.pbcI[0] < LEARNING_CAP:
-                hh.pbcI[0] = min(hh.pbcI[0] * (1 + LEARNING_RATE), LEARNING_CAP)
-
-            # find neighbors (link-neighbors in NetLogo)
-            neighbors = self._get_patch_neighbors(hh)
-            if not neighbors:
-                continue
-
-            # Each neighbor computes neighborhood stats from THEIR OWN patch-neighbors
-            for ngb in neighbors:
-                patch_ngbs = self._get_patch_neighbors(ngb)
-                if not patch_ngbs:
+            # Each neighbour computes stats from its OWN patch-neighbours
+            ngb_k:     Dict[int, float] = {}
+            ngb_ca:    Dict[int, float] = {}
+            ngb_ed:    Dict[int, float] = {}
+            ngb_pn1:   Dict[int, float] = {}
+            ngb_sn1:   Dict[int, float] = {}
+            ngb_pbcI1: Dict[int, float] = {}
+            for j in nbrs:
+                nn = self._nbr_idx[j]
+                if len(nn) == 0:
                     continue
-                ngb.ngb_k     = _max_mean_median([n.know   for n in patch_ngbs])
-                ngb.ngb_ca    = _max_mean_median([n.cee_aw for n in patch_ngbs])
-                ngb.ngb_ed    = _max_mean_median([n.ed_aw  for n in patch_ngbs])
-                ngb.ngb_pn1   = _max_mean_median([n.pn[0]  for n in patch_ngbs])
-                ngb.ngb_sn1   = _max_mean_median([n.sn[0]  for n in patch_ngbs])
-                ngb.ngb_pbcI1 = _max_mean_median([n.pbcI[0] for n in patch_ngbs])
+                ngb_k[j]     = _max_mean_median_arr(self._know[nn])
+                ngb_ca[j]    = _max_mean_median_arr(self._cee_aw[nn])
+                ngb_ed[j]    = _max_mean_median_arr(self._ed_aw[nn])
+                ngb_pn1[j]   = _max_mean_median_arr(self._pn[nn, 0])
+                ngb_sn1[j]   = _max_mean_median_arr(self._sn[nn, 0])
+                ngb_pbcI1[j] = _max_mean_median_arr(self._pbcI[nn, 0])
 
-            # Slow dynamics: update only if active hh has > SLOW_NEIGHBOR_MIN neighbors
-            # Fast / Informative: update regardless
-            if self.learning == "Slow dynamics" and len(neighbors) <= SLOW_NEIGHBOR_MIN:
+            # Slow dynamics: skip if active hh does not have enough neighbours
+            if slow and len(nbrs) <= SLOW_NEIGHBOR_MIN:
                 continue
 
-            for ngb in neighbors:
-                if ngb.know   < ngb.ngb_k    and ngb.know   < LEARNING_CAP:
-                    ngb.know   = min(ngb.know   * (1 + LEARNING_RATE), LEARNING_CAP)
-                if ngb.cee_aw < ngb.ngb_ca   and ngb.cee_aw < LEARNING_CAP:
-                    ngb.cee_aw = min(ngb.cee_aw * (1 + LEARNING_RATE), LEARNING_CAP)
-                if ngb.ed_aw  < ngb.ngb_ed   and ngb.ed_aw  < LEARNING_CAP:
-                    ngb.ed_aw  = min(ngb.ed_aw  * (1 + LEARNING_RATE), LEARNING_CAP)
-                if ngb.pn[0]  < ngb.ngb_pn1  and ngb.pn[0]  < LEARNING_CAP:
-                    ngb.pn[0]  = min(ngb.pn[0]  * (1 + LEARNING_RATE), LEARNING_CAP)
-                if ngb.sn[0]  < ngb.ngb_sn1  and ngb.sn[0]  < LEARNING_CAP:
-                    ngb.sn[0]  = min(ngb.sn[0]  * (1 + LEARNING_RATE), LEARNING_CAP)
-                if ngb.pbcI[0] < ngb.ngb_pbcI1 and ngb.pbcI[0] < LEARNING_CAP:
-                    ngb.pbcI[0] = min(ngb.pbcI[0] * (1 + LEARNING_RATE), LEARNING_CAP)
+            for j in nbrs:
+                if j not in ngb_k:
+                    continue
+                if self._know[j]   < ngb_k[j]     and self._know[j]   < lc:
+                    self._know[j]   = min(float(self._know[j])   * (1.0 + lr), lc)
+                if self._cee_aw[j] < ngb_ca[j]    and self._cee_aw[j] < lc:
+                    self._cee_aw[j] = min(float(self._cee_aw[j]) * (1.0 + lr), lc)
+                if self._ed_aw[j]  < ngb_ed[j]    and self._ed_aw[j]  < lc:
+                    self._ed_aw[j]  = min(float(self._ed_aw[j])  * (1.0 + lr), lc)
+                if self._pn[j, 0]  < ngb_pn1[j]   and self._pn[j, 0]  < lc:
+                    self._pn[j, 0]  = min(float(self._pn[j, 0])  * (1.0 + lr), lc)
+                if self._sn[j, 0]  < ngb_sn1[j]   and self._sn[j, 0]  < lc:
+                    self._sn[j, 0]  = min(float(self._sn[j, 0])  * (1.0 + lr), lc)
+                if self._pbcI[j,0] < ngb_pbcI1[j] and self._pbcI[j,0] < lc:
+                    self._pbcI[j,0] = min(float(self._pbcI[j,0]) * (1.0 + lr), lc)
 
     def _update_income(self) -> None:
-        """
-        Multiply household income by CGE growth factor for current n.
-        Mirrors update.income procedure.
-        All income groups use column 0 of row n from the CGE CSV.
-        """
+        """Multiply household income by CGE growth factor."""
         if self.n >= len(self.cge):
             return
-        multiplier = self.cge[self.n]
-        for hh in self.households:
-            hh.income *= multiplier
+        self._income *= self.cge[self.n]
 
     def _update_energy(self) -> None:
-        """
-        Improve energy label for renovating households.
-        Mirrors update.energy procedure:
-            if act1 and dw_elab >= 2: dw_elab -= 1
-            if act1 and dw_elab == 1: h_sta = "Efficient"
-        """
-        for hh in self.households:
-            if hh.act1:
-                if hh.dw_elab >= 2:
-                    hh.dw_elab -= 1
-                elif hh.dw_elab == 1:
-                    hh.h_sta = "Efficient"
+        """Improve energy label for renovating households."""
+        m = self._act1
+        self._dw_elab[m & (self._dw_elab >= 2)] -= 1
+        self._efficient[m & (self._dw_elab == 1)] = True
 
     def _update_memory(self) -> None:
-        """
-        Update renovation cooldown counters and reset invest1 after the
-        cooldown period expires.  Mirrors update.memory procedure:
-            if invest1: act1_year += 1
-            if act1_year >= cooldown(dw_age): invest1 = False, act1_year = 0
-        """
-        for hh in self.households:
-            if hh.invest1:
-                hh.act1_year += 1
-            cooldown = COOLDOWN_BY_DWAGE.get(hh.dw_age, 7)
-            if hh.act1_year >= cooldown:
-                hh.invest1   = False
-                hh.act1_year = 0
+        """Tick cooldown counters and reset invest1 after the cooldown expires."""
+        self._act1_year[self._invest1] += 1
+        cooldowns = _COOLDOWN_LUT[self._dw_age]
+        expired = self._act1_year >= cooldowns
+        self._invest1[expired]   = False
+        self._act1_year[expired] = 0
 
     # ------------------------------------------------------------------
     # Statistics
     # ------------------------------------------------------------------
 
     def _collect_stats(self) -> AnnualStats:
-        n_hh = len(self.households)
-        renovated  = [hh for hh in self.households if hh.act1]
-        in_process = [hh for hh in self.households if hh.invest1]
+        N = self.n_households
 
-        renov_by_dwage: Dict[int, int] = {1: 0, 2: 0, 3: 0}
-        total_by_dwage: Dict[int, int] = {1: 0, 2: 0, 3: 0}
-        renov_by_group: Dict[int, int] = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
-        total_by_group: Dict[int, int] = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+        renov_by_dwage: Dict[int, int] = {}
+        total_by_dwage: Dict[int, int] = {}
+        for cat in (1, 2, 3):
+            age_mask = self._dw_age == cat
+            total_by_dwage[cat] = int(np.sum(age_mask))
+            renov_by_dwage[cat] = int(np.sum(self._act1 & age_mask))
 
-        for hh in self.households:
-            age_cat = hh.dw_age
-            grp     = hh.h_group if hh.h_group <= 4 else 5
-            total_by_dwage[age_cat] += 1
-            total_by_group[grp]     += 1
-            if hh.act1:
-                renov_by_dwage[age_cat] += 1
-                renov_by_group[grp]     += 1
-
-        high_guilt = sum(1 for hh in self.households if hh.guilt == "H")
-        high_m1    = sum(1 for hh in self.households if hh.m_st[0] == "H")
-        high_m2    = sum(1 for hh in self.households if hh.m_st[1] == "H")
-        high_m3    = sum(1 for hh in self.households if hh.m_st[2] == "H")
+        # Groups 5-7 all map to bucket 5
+        g_arr = np.where(self._h_group <= 4, self._h_group, 5)
+        renov_by_group: Dict[int, int] = {}
+        total_by_group: Dict[int, int] = {}
+        for g in range(1, 6):
+            grp_mask = g_arr == g
+            total_by_group[g] = int(np.sum(grp_mask))
+            renov_by_group[g] = int(np.sum(self._act1 & grp_mask))
 
         return AnnualStats(
-            year                     = self.year,
-            n_renovated              = len(renovated),
-            n_conservation           = sum(1 for hh in self.households if hh.act2),
-            n_switching              = sum(1 for hh in self.households if hh.act3),
-            n_invested               = len(in_process),
-            total_gas_saved          = sum(hh.save_a[0] for hh in self.households),
-            total_energy_conservation= sum(hh.save_a[1] for hh in self.households),
-            total_energy_switching   = sum(hh.save_a[2] for hh in self.households),
-            total_investment         = sum(hh.invs_a[0] for hh in self.households),
-            total_invest_conservation= sum(hh.invs_a[1] for hh in self.households),
-            total_invest_switching   = sum(hh.invs_a[2] for hh in self.households),
-            avg_aware  = _mean([hh.aware for hh in self.households]),
-            avg_pn1    = _mean([hh.pn[0] for hh in self.households]),
-            avg_sn1    = _mean([hh.sn[0] for hh in self.households]),
-            high_guilt_pct = 100.0 * high_guilt / n_hh if n_hh else 0.0,
-            high_m1_pct    = 100.0 * high_m1    / n_hh if n_hh else 0.0,
-            high_m2_pct    = 100.0 * high_m2    / n_hh if n_hh else 0.0,
-            high_m3_pct    = 100.0 * high_m3    / n_hh if n_hh else 0.0,
+            year                      = self.year,
+            n_renovated               = int(np.sum(self._act1)),
+            n_conservation            = 0,
+            n_switching               = 0,
+            n_invested                = int(np.sum(self._invest1)),
+            total_gas_saved           = float(np.sum(self._save_a0)),
+            total_energy_conservation = 0.0,
+            total_energy_switching    = 0.0,
+            total_investment          = float(np.sum(self._invs_a0)),
+            total_invest_conservation = 0.0,
+            total_invest_switching    = 0.0,
+            avg_aware  = float(np.mean(self._aware)),
+            avg_pn1    = float(np.mean(self._pn[:, 0])),
+            avg_sn1    = float(np.mean(self._sn[:, 0])),
+            high_guilt_pct = 100.0 * float(np.sum(self._guilt))      / N,
+            high_m1_pct    = 100.0 * float(np.sum(self._m_st[:, 0])) / N,
+            high_m2_pct    = 100.0 * float(np.sum(self._m_st[:, 1])) / N,
+            high_m3_pct    = 100.0 * float(np.sum(self._m_st[:, 2])) / N,
             renov_by_dwage = renov_by_dwage,
             total_by_dwage = total_by_dwage,
             renov_by_group = renov_by_group,
@@ -660,13 +607,6 @@ class BENCHv4:
     # ------------------------------------------------------------------
 
     def renovation_rate_by_vintage(self) -> Dict[int, List[float]]:
-        """
-        Return renovation rates (%) by vintage category over time,
-        matching Fig. 5 in the paper.
-
-        Returns dict: {dw_age_category: [pct_year_1, pct_year_2, ...]}
-        where pct is relative to the total in each cohort.
-        """
         result = {1: [], 2: [], 3: []}
         for s in self.history:
             for cat in (1, 2, 3):
@@ -676,10 +616,6 @@ class BENCHv4:
         return result
 
     def renovation_rate_by_income(self) -> Dict[int, List[float]]:
-        """
-        Return renovation rates (%) by income group over time,
-        matching Fig. 7 in the paper.
-        """
         result = {g: [] for g in range(1, 6)}
         for s in self.history:
             for g in range(1, 6):
@@ -692,16 +628,14 @@ class BENCHv4:
         return [s.year for s in self.history]
 
     def summary(self) -> str:
-        """Print a brief text summary."""
         lines = [
             f"BENCH v4 — {self.case_study}  Learning={self.learning}  seed={self.seed}",
-            f"Years {START_YEAR}–{END_YEAR}  |  N={len(self.households)} households",
+            f"Years {START_YEAR}–{END_YEAR}  |  N={self.n_households} households",
             "",
             f"{'Year':>6}  {'Renov':>7}  {'%Renov':>7}  {'GasSaved(kWh)':>14}  {'Invest(EUR)':>12}",
         ]
-        n_hh = len(self.households)
         for s in self.history:
-            pct = 100 * s.n_renovated / n_hh if n_hh else 0
+            pct = 100 * s.n_renovated / self.n_households
             lines.append(
                 f"{s.year:>6}  {s.n_renovated:>7}  {pct:>7.2f}  "
                 f"{s.total_gas_saved:>14,.0f}  {s.total_investment:>12,.0f}"

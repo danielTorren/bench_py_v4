@@ -116,7 +116,7 @@ def _patched(case_study, pdict):
 # ---------------------------------------------------------------------------
 
 def _extract_outputs(model):
-    n_hh  = len(model.households)
+    n_hh  = model.n_households
     n_yrs = len(model.history)
     if n_hh == 0 or n_yrs == 0:
         return {"mean_annual_renov_pct": 0.0,
