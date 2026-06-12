@@ -85,6 +85,14 @@ def _run_and_save(case, learning, seed, memory, run_label_i, runs_dir,
     return model
 
 
+def _run_and_save_tagged(si, case, learning, seed, memory, run_label_i, runs_dir,
+                         n_households=None):
+    """Like _run_and_save but returns (scenario_index, model) for flat parallel dispatch."""
+    model = _run_and_save(case, learning, seed, memory, run_label_i, runs_dir,
+                          n_households=n_households)
+    return si, model
+
+
 def _print_mean_table(all_models, case, learning):
     from collections import defaultdict
     accum = defaultdict(lambda: defaultdict(list))
@@ -105,53 +113,6 @@ def _print_mean_table(all_models, case, learning):
             return sum(v) / len(v) if v else 0.0
 
 
-def _run_scenario(case, learning, runs, memory, output_dir,
-                  run_label, verbose, no_plot, n_jobs=-1, timestamped=True,
-                  n_households=None):
-    """Execute one scenario (possibly many seed runs) and save outputs."""
-    slug  = _LEARNING_SLUG.get(learning, learning.replace(" ", "_"))
-    label = run_label if run_label else f"{case}_{slug}"
-    if timestamped:
-        config_dir = _make_config_dir(output_dir, label)
-    else:
-        config_dir = os.path.join(output_dir, label)
-        os.makedirs(config_dir, exist_ok=True)
-    runs_dir = os.path.join(config_dir, "runs")
-    os.makedirs(runs_dir, exist_ok=True)
-
-    print(f"\n{'='*60}")
-    print(f"Scenario : {case} / {learning}")
-    print(f"Runs     : {runs}")
-    print(f"Output   : {config_dir}")
-    print(f"{'='*60}")
-
-    single_run = runs == 1
-
-    if single_run:
-        model = _run_and_save(case, learning, None, memory, "run_001", runs_dir,
-                              verbose=verbose, n_households=n_households)
-        print(model.summary())
-        all_models = [model]
-    else:
-        worker_args = [
-            (case, learning, None, memory, f"run_{i+1:03d}", runs_dir,
-             False, n_households)
-            for i in range(runs)
-        ]
-        all_models = Parallel(n_jobs=n_jobs)(
-            delayed(_run_and_save)(*arg) for arg in worker_args
-        )
-
-    _print_mean_table(all_models, case, learning)
-
-    if not no_plot:
-        try:
-            from bench_v4.plotting import plot_all
-            plot_all(config_dir)
-        except ImportError as e:
-            print(f"Plotting skipped (missing dependency: {e})")
-
-    return config_dir
 
 
 def _load_yaml(config_path: str):
@@ -198,28 +159,67 @@ def main():
     t0 = datetime.now()
     
     if args.config:
+        from collections import defaultdict
+
         scenarios   = _load_yaml(args.config)
         config_stem = Path(args.config).stem
         parent_dir  = _make_config_dir(args.output_dir, config_stem)
         total_runs  = sum(sc.get("runs", 1) for sc in scenarios)
+
         print(f"Config run folder : {parent_dir}")
         print(f"Scenarios         : {len(scenarios)}")
         print(f"Total runs        : {total_runs}")
         print(f"Jobs              : {args.jobs}  (-1 = all available cores)")
-        for sc in scenarios:
-            _run_scenario(
-                case         = sc.get("case_study", "NL"),
-                learning     = sc.get("learning", "Informative"),
-                runs         = sc.get("runs", 1),
-                memory       = sc.get("memory", True),
-                output_dir   = parent_dir,
-                run_label    = sc.get("run_label", None),
-                verbose      = args.verbose,
-                no_plot      = args.no_plot,
-                n_jobs       = args.jobs,
-                timestamped  = False,
-                n_households = sc.get("n_households", args.n_households),
-            )
+
+        # Pre-create per-scenario directories and build a flat job list across
+        # all scenarios × seeds so the entire batch runs in one parallel pool
+        # (no nested parallelism).
+        sc_dirs: list = []
+        worker_args: list = []
+
+        for si, sc in enumerate(scenarios):
+            slug  = _LEARNING_SLUG.get(sc.get("learning", "Informative"),
+                                        sc.get("learning", "Informative").replace(" ", "_"))
+            label = sc.get("run_label") or f"{sc.get('case_study', 'NL')}_{slug}"
+            sc_dir   = os.path.join(parent_dir, label)
+            runs_dir = os.path.join(sc_dir, "runs")
+            os.makedirs(runs_dir, exist_ok=True)
+            sc_dirs.append((sc_dir, runs_dir))
+
+            case      = sc.get("case_study", "NL")
+            learning  = sc.get("learning", "Informative")
+            memory_sc = sc.get("memory", True)
+            n_hh      = sc.get("n_households", args.n_households)
+            runs      = sc.get("runs", 1)
+
+            for i in range(runs):
+                worker_args.append(
+                    (si, case, learning, None, memory_sc,
+                     f"run_{i+1:03d}", runs_dir, n_hh)
+                )
+
+        # Single parallel dispatch: scenarios × seeds all at once
+        raw = Parallel(n_jobs=args.jobs, verbose=1)(
+            delayed(_run_and_save_tagged)(*arg) for arg in worker_args
+        ) or []
+
+        # Group returned models by scenario index
+        sc_models: dict = defaultdict(list)
+        for si, model in raw:
+            sc_models[si].append(model)
+
+        # Per-scenario post-processing (sequential — just I/O and plotting)
+        for si, sc in enumerate(scenarios):
+            sc_dir, _ = sc_dirs[si]
+            _print_mean_table(sc_models[si],
+                              sc.get("case_study", "NL"),
+                              sc.get("learning", "Informative"))
+            if not args.no_plot:
+                try:
+                    from bench_v4.plotting import plot_all
+                    plot_all(sc_dir)
+                except ImportError as e:
+                    print(f"Plotting skipped for scenario {si} (missing dependency: {e})")
 
         if not args.no_plot:
             try:
@@ -232,44 +232,7 @@ def main():
         print(f"\nAll done.  Results in: {parent_dir}")
 
     else:
-        single = args.runs == 1
-        slug   = _LEARNING_SLUG.get(args.learning, args.learning.replace(" ", "_"))
-        label  = f"{args.case}_{slug}"
-
-        config_dir = _make_config_dir(args.output_dir, label)
-        runs_dir   = os.path.join(config_dir, "runs")
-        os.makedirs(runs_dir, exist_ok=True)
-        print(f"Output folder: {config_dir}")
-        if not single:
-            print(f"Jobs         : {args.jobs}  (-1 = all available cores)")
-
-        if single:
-            seed  = args.seed
-            model = _run_and_save(args.case, args.learning, seed, memory,
-                                  "run_001", runs_dir, verbose=args.verbose,
-                                  n_households=args.n_households)
-            print(model.summary())
-            all_models = [model]
-        else:
-            worker_args = [
-                (args.case, args.learning, None, memory, f"run_{i+1:03d}", runs_dir,
-                 False, args.n_households)
-                for i in range(args.runs)
-            ]
-            all_models = Parallel(n_jobs=args.jobs)(
-                delayed(_run_and_save)(*arg) for arg in worker_args
-            )
-
-        _print_mean_table(all_models, args.case, args.learning)
-
-        if not args.no_plot:
-            try:
-                from bench_v4.plotting import plot_all
-                plot_all(config_dir)
-            except ImportError as e:
-                print(f"Plotting skipped (missing dependency: {e})")
-
-        print(f"\nDone.  All results in: {config_dir}")
+       raise ValueError("Single-run mode is no longer supported. Please use --config with a YAML scenario file.")
     
     elapsed = datetime.now() - t0
     print(f"\nCompleted in {str(elapsed).split('.')[0]}")

@@ -260,6 +260,8 @@ def main():
     print(f"Running {n_runs} model runs ...\n")
     t0 = datetime.now()
     raw = Parallel(n_jobs=n_jobs, verbose=1)(delayed(_run_one)(arg) for arg in worker_args)
+    elapsed = datetime.now() - t0
+    print(f"\nCompleted in {str(elapsed).split('.')[0]}")
 
     # --- Aggregate seeds per evaluation ---
     seed_results: dict[int, list] = defaultdict(list)
@@ -320,8 +322,8 @@ def main():
     print(f"  samples.csv      {n_eval} rows x {n_params} params")
     print(f"  outputs.csv      {n_eval} rows x {len(output_keys)} outputs")
     print(f"  sa_indices.json  S1 + ST for {len(output_keys)} outputs")
-    elapsed = datetime.now() - t0
-    print(f"\nCompleted in {str(elapsed).split('.')[0]}")
+    
+    
     print(f"\nPlot with:")
     print(f"  python sensitivity/plot_sa.py --results {run_dir}")
 

@@ -1,8 +1,8 @@
 """
 BENCH v4 — Python translation of BENCH_v04_B-NLD.ESP.nlogox.
 Vectorized: agent attributes stored as numpy arrays; per-agent loops replaced
-with array operations.  Random draws that affect seed-reproducibility still
-use Python's random module (same call sequence as the original model).
+with array operations.  All random draws use self._np_rng (numpy Generator)
+so initialization is fast; Python's random is seeded for compatibility only.
 
 go() procedure order (unchanged from NetLogo):
     update.info     → _update_info
@@ -31,7 +31,6 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .household import Household
 from .params import (
     ES_GROUPS, NL_GROUPS, N_HOUSEHOLDS,
     CGE_FILES,
@@ -50,7 +49,7 @@ _COOLDOWN_LUT = np.array([0, 15, 7, 2], dtype=np.int32)
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Module-level helpers
 # ---------------------------------------------------------------------------
 
 def _load_cge(filepath: str) -> List[float]:
@@ -66,21 +65,42 @@ def _load_cge(filepath: str) -> List[float]:
 def _max_mean_median_arr(arr: np.ndarray) -> float:
     """max(mean, median) — mirrors NetLogo: max list mean median.
 
-    Pure-Python path for the tiny arrays (0–8 elements) produced by patch
-    neighbour lookups.  Avoids the ~15 µs per-call overhead of np.median on
-    small inputs, which dominates runtime when called ~160k times per run.
+    Pure-Python path for tiny arrays (0–8 elements) from patch-neighbour
+    lookups.  Avoids the ~15 µs per-call overhead of np.median on small inputs.
     """
     n = len(arr)
     if n == 0:
         return 0.0
-    vals = arr.tolist()          # one fast C-level copy out of numpy
+    vals = arr.tolist()
     mean = sum(vals) / n
     if n == 1:
-        return mean              # mean == median for a single element
+        return mean
     vals.sort()
     mid = n >> 1
     median = vals[mid] if n & 1 else (vals[mid - 1] + vals[mid]) * 0.5
     return mean if mean >= median else median
+
+
+def _rand_num_vec(rng, lo: float, hi: float, step: float, size: int) -> np.ndarray:
+    """Vectorised equivalent of household._rand_num for `size` draws."""
+    n_steps = math.floor((hi - lo) / step)
+    return lo + step * rng.integers(0, n_steps + 1, size=size).astype(np.float64)
+
+
+def _categorical_vec(rng, breaks: list, size: int) -> np.ndarray:
+    """Vectorised equivalent of household._categorical."""
+    uppers = [b[0] for b in breaks]
+    values = np.array([b[1] for b in breaks], dtype=np.int8)
+    rn = rng.uniform(0, 100, size)
+    idx = np.searchsorted(uppers, rn, side='right')
+    return values[np.clip(idx, 0, len(breaks) - 1)]
+
+
+def _rand_er_vec(rng, spec, size: int) -> np.ndarray:
+    """Vectorised equivalent of household._rand_er (None → fixed -0.01)."""
+    if spec is None:
+        return np.full(size, -0.01, dtype=np.float64)
+    return _rand_num_vec(rng, spec[0], spec[1], 0.01, size)
 
 
 # ---------------------------------------------------------------------------
@@ -90,27 +110,25 @@ def _max_mean_median_arr(arr: np.ndarray) -> float:
 @dataclass
 class AnnualStats:
     year: int
-    n_renovated: int          # count(act1=True) that year
-    n_conservation: int       # count(act2=True) — always 0 in v4
-    n_switching: int          # count(act3=True) — always 0 in v4
-    n_invested:  int          # count(invest1=True) — cumulative in-process
-    total_gas_saved: float    # kWh saved by renovation
-    total_energy_conservation: float  # kWh saved by conservation — 0 in v4
-    total_energy_switching: float     # kWh saved by switching    — 0 in v4
-    total_investment: float           # EUR spent on renovation
-    total_invest_conservation: float  # EUR spent on conservation — 0 in v4
-    total_invest_switching: float     # EUR spent on switching    — 0 in v4
+    n_renovated: int
+    n_conservation: int
+    n_switching: int
+    n_invested: int
+    total_gas_saved: float
+    total_energy_conservation: float
+    total_energy_switching: float
+    total_investment: float
+    total_invest_conservation: float
+    total_invest_switching: float
     avg_aware: float
     avg_pn1: float
     avg_sn1: float
-    high_guilt_pct: float     # % households with guilt=="H"
-    high_m1_pct: float        # % motivated for investment
-    high_m2_pct: float        # % motivated for conservation
-    high_m3_pct: float        # % motivated for switching
-    # by dw_age category
+    high_guilt_pct: float
+    high_m1_pct: float
+    high_m2_pct: float
+    high_m3_pct: float
     renov_by_dwage: Dict[int, int] = field(default_factory=dict)
     total_by_dwage: Dict[int, int] = field(default_factory=dict)
-    # by income group (1-5, where 5 covers groups 5-7)
     renov_by_group: Dict[int, int] = field(default_factory=dict)
     total_by_group: Dict[int, int] = field(default_factory=dict)
 
@@ -125,12 +143,12 @@ class BENCHv4:
 
     Parameters
     ----------
-    case_study : "ES" (Spain-Navarre) | "NL" (Netherlands-Overijssel)
-    seed       : random seed; None → 1
-    learning   : "Slow dynamics" | "Fast dynamics" | "Informative" | "No learning"
-    memory     : True/False — apply recall of pre-2016 renovations in first tick
-    investment : True/False — whether Investment behaviour is enabled
-    data_dir   : path to folder containing the CGE CSV files
+    case_study   : "ES" | "NL"
+    seed         : random seed (None → 1)
+    learning     : "Slow dynamics" | "Fast dynamics" | "Informative" | "No learning"
+    memory       : apply recall of pre-2016 renovations in first tick
+    investment   : whether Investment behaviour is enabled
+    data_dir     : path to CGE CSV files
     n_households : synthetic population size (None → survey default)
     """
 
@@ -144,19 +162,17 @@ class BENCHv4:
         data_dir: Optional[str] = None,
         n_households: Optional[int] = None,
     ):
-        self.case_study  = case_study
-        self.learning    = learning
-        self.memory_on   = memory
-        self.investment  = investment
+        self.case_study   = case_study
+        self.learning     = learning
+        self.memory_on    = memory
+        self.investment   = investment
         self.n_households = n_households or N_HOUSEHOLDS[case_study]
 
         if seed is None:
             seed = 1
         self.seed = seed
-        random.seed(seed)
-        # Separate numpy RNG for vectorised dwelling updates (keeps Python
-        # random state clean for recall_memory reproducibility)
-        self._np_rng = np.random.default_rng(seed)
+        random.seed(seed)                          # kept for API compatibility
+        self._np_rng = np.random.default_rng(seed) # all draws use this
 
         if data_dir is None:
             here = Path(__file__).parent.parent
@@ -166,7 +182,7 @@ class BENCHv4:
         self.year: int = START_YEAR
         self.n:    int = 0
 
-        self.households: List[Household] = []  # populated during setup, then cleared
+        self.households: List = []   # kept as empty list for API compatibility
         self.cge: List[float] = []
         self.history: List[AnnualStats] = []
         self.a1_cum: int = 0
@@ -176,14 +192,12 @@ class BENCHv4:
     # ------------------------------------------------------------------
 
     def setup(self) -> None:
-        """Initialise households, grid and load data (mirrors NetLogo setup)."""
         self._load_data()
-        self._create_households()   # Household objects drawn via Python random
-        self._place_on_grid()       # grid positions drawn via Python random
-        self._init_arrays()         # extract to numpy, build spatial index, free objects
+        self._create_arrays()        # Option A: numpy batch initialization
+        self._place_on_grid()        # numpy grid placement
+        self._build_neighbor_index() # precompute spatial index
 
     def go(self) -> bool:
-        """Execute one simulation tick (one calendar year).  Returns False when done."""
         if self.year > END_YEAR:
             return False
 
@@ -208,26 +222,24 @@ class BENCHv4:
         self._update_memory()
 
         self.history.append(self._collect_stats())
-
         self.year += 1
         self.n    += 1
         return True
 
     def run(self, verbose: bool = False) -> List[AnnualStats]:
-        """Run the full simulation from START_YEAR to END_YEAR."""
         self.setup()
         while self.go():
             if verbose:
                 last = self.history[-1]
-                pct_renov = 100 * last.n_renovated / self.n_households
+                pct = 100 * last.n_renovated / self.n_households
                 print(
                     f"  year={last.year}  renovated={last.n_renovated} "
-                    f"({pct_renov:.1f}%)  gas_saved={last.total_gas_saved:.0f}"
+                    f"({pct:.1f}%)  gas_saved={last.total_gas_saved:.0f}"
                 )
         return self.history
 
     # ------------------------------------------------------------------
-    # Initialisation
+    # Initialisation — Option A: direct numpy batch draws
     # ------------------------------------------------------------------
 
     def _load_data(self) -> None:
@@ -235,104 +247,132 @@ class BENCHv4:
         fpath = os.path.join(self.data_dir, fname)
         self.cge = _load_cge(fpath)
 
-    def _create_households(self) -> None:
-        """Create n_households agents using empirical distributions."""
-        groups = ES_GROUPS if self.case_study == "ES" else NL_GROUPS
-        for hh_id in range(self.n_households):
-            rn = random.uniform(0, 100)
-            for cum_upper, group_id, params in groups:
-                if rn < cum_upper:
-                    self.households.append(
-                        Household(hh_id, self.case_study, rn, params, group_id)
-                    )
-                    break
-            else:
-                _, group_id, params = groups[-1]
-                self.households.append(
-                    Household(hh_id, self.case_study, rn, params, group_id)
-                )
+    def _create_arrays(self) -> None:
+        """Create all agent attribute arrays using numpy batch draws (no Household objects)."""
+        N   = self.n_households
+        rng = self._np_rng
+        groups_list = ES_GROUPS if self.case_study == "ES" else NL_GROUPS
+
+        # --- Group assignment ---
+        rn_group   = rng.uniform(0, 100, N)
+        cum_uppers = [g[0] for g in groups_list]
+        gi_arr     = np.clip(
+            np.searchsorted(cum_uppers, rn_group, side='right'),
+            0, len(groups_list) - 1,
+        )
+        self._h_group = np.array([g[1] for g in groups_list], dtype=np.int8)[gi_arr]
+
+        # --- Pre-allocate attribute arrays ---
+        self._income  = np.empty(N, dtype=np.float64)
+        self._gas     = np.empty(N, dtype=np.float64)
+        self._edu     = np.empty(N, dtype=np.int8)
+        self._age     = np.empty(N, dtype=np.int8)
+        self._dw_st   = np.empty(N, dtype=np.int8)
+        self._dw_elab = np.empty(N, dtype=np.int8)
+        self._dw_type = np.empty(N, dtype=np.int8)
+        self._dw_age  = np.empty(N, dtype=np.int8)
+        self._dw_size = np.empty(N, dtype=np.int8)
+        self._know    = np.empty(N, dtype=np.float64)
+        self._cee_aw  = np.empty(N, dtype=np.float64)
+        self._ed_aw   = np.empty(N, dtype=np.float64)
+        self._pn      = np.empty((N, 3), dtype=np.float64)
+        self._sn      = np.empty((N, 3), dtype=np.float64)
+        self._pbcI    = np.empty((N, 3), dtype=np.float64)
+        self._pbcC    = np.empty((N, 3), dtype=np.float64)
+        self._pbcS    = np.empty((N, 3), dtype=np.float64)
+        self._ene_pat = np.empty((N, 3), dtype=np.float64)
+        self._erI     = np.empty((N, 3), dtype=np.float64)
+
+        # --- Fill each group in one batch ---
+        for gi, (_, _gid, p) in enumerate(groups_list):
+            mask = gi_arr == gi
+            n_g  = int(np.sum(mask))
+            if n_g == 0:
+                continue
+
+            lo, hi, st = p["income_range"]
+            self._income[mask] = _rand_num_vec(rng, lo, hi, st, n_g)
+
+            lo, hi, st = p["gas_range"]
+            self._gas[mask] = _rand_num_vec(rng, lo, hi, st, n_g)
+
+            lo, hi = p["know_range"]
+            self._know[mask] = _rand_num_vec(rng, lo, hi, 0.05, n_g)
+
+            lo, hi = p["cee_aw_range"]
+            self._cee_aw[mask] = _rand_num_vec(rng, lo, hi, 0.05, n_g)
+
+            lo, hi = p["ed_aw_range"]
+            self._ed_aw[mask] = _rand_num_vec(rng, lo, hi, 0.05, n_g)
+
+            pn_lo, pn_hi = p["pn_range"]
+            for j in range(3):
+                self._pn[mask, j] = _rand_num_vec(rng, pn_lo, pn_hi, 0.05, n_g)
+
+            sn_lo, sn_hi = p["sn_range"]
+            for j in range(3):
+                self._sn[mask, j] = _rand_num_vec(rng, sn_lo, sn_hi, 0.05, n_g)
+
+            pbcI_lo, pbcI_hi = p["pbcI_range"]
+            for j in range(3):
+                self._pbcI[mask, j] = _rand_num_vec(rng, pbcI_lo, pbcI_hi, 0.05, n_g)
+
+            pbcC_lo, pbcC_hi = p["pbcC_range"]
+            for j in range(3):
+                self._pbcC[mask, j] = _rand_num_vec(rng, pbcC_lo, pbcC_hi, 0.05, n_g)
+
+            pbcS_lo, pbcS_hi = p["pbcS_range"]
+            for j in range(3):
+                self._pbcS[mask, j] = _rand_num_vec(rng, pbcS_lo, pbcS_hi, 0.05, n_g)
+
+            ep_lo, ep_hi = p["ene_pat_range"]
+            for j in range(3):
+                self._ene_pat[mask, j] = _rand_num_vec(rng, ep_lo, ep_hi, 0.05, n_g)
+
+            for j in range(3):
+                self._erI[mask, j] = _rand_er_vec(rng, p["erI_ranges"][j], n_g)
+
+            self._edu[mask]     = _categorical_vec(rng, p["edu_breaks"],    n_g)
+            self._age[mask]     = _categorical_vec(rng, p["age_breaks"],    n_g)
+            self._dw_age[mask]  = _categorical_vec(rng, p["dwage_breaks"],  n_g)
+            self._dw_size[mask] = _categorical_vec(rng, p["dwsize_breaks"], n_g)
+            self._dw_elab[mask] = _categorical_vec(rng, p["elab_breaks"],   n_g)
+
+            self._dw_st[mask]   = np.where(
+                rng.uniform(0, 100, n_g) < p["owner_thresh"], np.int8(1), np.int8(2))
+            self._dw_type[mask] = np.where(
+                rng.uniform(0, 100, n_g) < p["dtype_thresh"], np.int8(1), np.int8(2))
+
+        # --- Simulation state (all zero / False at start) ---
+        self._aware  = np.zeros(N, dtype=np.float64)
+        self._k      = np.zeros(N, dtype=np.float64)
+        self._U1     = np.zeros(N, dtype=np.float64)
+
+        self._guilt  = np.zeros(N,      dtype=bool)
+        self._m_st   = np.zeros((N, 3), dtype=bool)
+        self._cI_st  = np.zeros((N, 3), dtype=bool)
+        self._cC_st  = np.zeros((N, 3), dtype=bool)
+        self._cS_st  = np.zeros((N, 3), dtype=bool)
+
+        self._act1      = np.zeros(N, dtype=bool)
+        self._invest1   = np.zeros(N, dtype=bool)
+        self._act1_year = np.zeros(N, dtype=np.int32)
+        self._insulated = np.zeros(N, dtype=bool)
+        self._efficient = np.zeros(N, dtype=bool)
+
+        self._save_a0 = np.zeros(N, dtype=np.float64)
+        self._invs_a0 = np.zeros(N, dtype=np.float64)
 
     def _place_on_grid(self) -> None:
-        """Place agents on a scaled grid that preserves the original agent density."""
+        """Draw grid positions; scale preserves ~0.1 agents/cell density."""
         scale = math.sqrt(self.n_households / N_HOUSEHOLDS[self.case_study])
         half  = max(1, round((GRID_MAX - GRID_MIN) / 2 * scale))
         self._grid_min = -half
         self._grid_max =  half
-
-        self._grid: Dict[Tuple[int, int], List[Household]] = {}
-        for hh in self.households:
-            hh.grid_x = random.randint(self._grid_min, self._grid_max)
-            hh.grid_y = random.randint(self._grid_min, self._grid_max)
-            key = (hh.grid_x, hh.grid_y)
-            if key not in self._grid:
-                self._grid[key] = []
-            self._grid[key].append(hh)
-
-    def _init_arrays(self) -> None:
-        """Extract household attributes to numpy arrays, build spatial index, free objects."""
-        hhs = self.households
-        N   = self.n_households
-
-        # --- Demographics ---
-        self._h_group = np.array([h.h_group for h in hhs], dtype=np.int8)
-        self._income  = np.array([h.income  for h in hhs], dtype=np.float64)
-        self._gas     = np.array([h.gas     for h in hhs], dtype=np.float64)
-        self._edu     = np.array([h.edu     for h in hhs], dtype=np.int8)
-        self._age     = np.array([h.age     for h in hhs], dtype=np.int8)
-        self._dw_st   = np.array([h.dw_st   for h in hhs], dtype=np.int8)
-        self._dw_elab = np.array([h.dw_elab for h in hhs], dtype=np.int8)
-        self._dw_type = np.array([h.dw_type for h in hhs], dtype=np.int8)
-        self._dw_age  = np.array([h.dw_age  for h in hhs], dtype=np.int8)
-        self._dw_size = np.array([h.dw_size for h in hhs], dtype=np.int8)
-
-        # --- Awareness / knowledge ---
-        self._know   = np.array([h.know   for h in hhs], dtype=np.float64)
-        self._cee_aw = np.array([h.cee_aw for h in hhs], dtype=np.float64)
-        self._ed_aw  = np.array([h.ed_aw  for h in hhs], dtype=np.float64)
-        self._aware  = np.zeros(N, dtype=np.float64)
-        self._k      = np.zeros(N, dtype=np.float64)
-
-        # --- Behavioral norms / PBC (N, 3) ---
-        self._pn    = np.array([[h.pn[j]    for j in range(3)] for h in hhs], dtype=np.float64)
-        self._sn    = np.array([[h.sn[j]    for j in range(3)] for h in hhs], dtype=np.float64)
-        self._pbcI  = np.array([[h.pbcI[j]  for j in range(3)] for h in hhs], dtype=np.float64)
-        self._pbcC  = np.array([[h.pbcC[j]  for j in range(3)] for h in hhs], dtype=np.float64)
-        self._pbcS  = np.array([[h.pbcS[j]  for j in range(3)] for h in hhs], dtype=np.float64)
-        self._ene_pat = np.array([[h.ene_pat[j] for j in range(3)] for h in hhs], dtype=np.float64)
-        self._erI   = np.array([[h.erI[j]   for j in range(3)] for h in hhs], dtype=np.float64)
-
-        # --- Utility ---
-        self._U1 = np.zeros(N, dtype=np.float64)
-
-        # --- Status flags (bool; True ≡ "H") ---
-        # Only updated when the preceding condition is met (sticky between ticks)
-        self._guilt = np.zeros(N,      dtype=bool)
-        self._m_st  = np.zeros((N, 3), dtype=bool)
-        self._cI_st = np.zeros((N, 3), dtype=bool)
-        self._cC_st = np.zeros((N, 3), dtype=bool)
-        self._cS_st = np.zeros((N, 3), dtype=bool)
-
-        # --- Actions ---
-        self._act1      = np.zeros(N, dtype=bool)
-        self._invest1   = np.zeros(N, dtype=bool)
-        self._act1_year = np.zeros(N, dtype=np.int32)
-        # h_sta flags — insulated is set in recall_memory and never reset
-        self._insulated = np.zeros(N, dtype=bool)
-        self._efficient = np.zeros(N, dtype=bool)
-
-        # --- Energy / investment tallies (only channel 0 active in v4) ---
-        self._save_a0 = np.zeros(N, dtype=np.float64)
-        self._invs_a0 = np.zeros(N, dtype=np.float64)
-
-        # --- Spatial ---
-        self._grid_x = np.array([h.grid_x for h in hhs], dtype=np.int32)
-        self._grid_y = np.array([h.grid_y for h in hhs], dtype=np.int32)
-
-        self._build_neighbor_index()
-
-        # Free Household objects and the temporary grid dict
-        self.households = []
-        self._grid = {}
+        self._grid_x = self._np_rng.integers(-half, half + 1,
+                                              self.n_households).astype(np.int32)
+        self._grid_y = self._np_rng.integers(-half, half + 1,
+                                              self.n_households).astype(np.int32)
 
     def _build_neighbor_index(self) -> None:
         """Precompute _nbr_idx[i] = array of agent indices on the 8 adjacent patches."""
@@ -355,25 +395,24 @@ class BENCHv4:
             self._nbr_idx.append(np.array(nbrs, dtype=np.int32))
 
     # ------------------------------------------------------------------
-    # go() sub-routines (in order of execution)
+    # go() sub-routines
     # ------------------------------------------------------------------
 
     def _update_info(self) -> None:
-        """Reset act1 each tick."""
         self._act1[:] = False
 
     def _recall_memory(self) -> None:
-        """Assign historical renovation status to some households in the first year."""
+        """Assign pre-2016 renovation status (vectorised via numpy RNG)."""
         if self.year != START_YEAR or not self.memory_on:
             return
         recall_probs = RECALL_PROB[self.case_study]
-        for i in range(self.n_households):
-            g_key = min(int(self._h_group[i]), 5)
-            p = recall_probs.get(g_key, 0.0)
-            if random.uniform(0, 100) <= p:
-                self._act1[i]      = True
-                self._invest1[i]   = True
-                self._insulated[i] = True
+        g_keys = np.where(self._h_group <= 4, self._h_group, np.int8(5))
+        probs  = np.array([recall_probs.get(int(g), 0.0) for g in g_keys],
+                          dtype=np.float64)
+        recalled = self._np_rng.uniform(0, 100, self.n_households) <= probs
+        self._act1[recalled]      = True
+        self._invest1[recalled]   = True
+        self._insulated[recalled] = True
 
     def _update_dwelling(self) -> None:
         """Probabilistically update dw_age from 2025 onwards."""
@@ -386,14 +425,13 @@ class BENCHv4:
                 break
 
     def _knowledge(self) -> None:
-        """Compute awareness and guilt; mirrors knowledge procedure."""
         thresh = GUILT_THRESH[self.case_study]
         self._aware = (self._know + self._cee_aw + self._ed_aw) / 3.0
         self._guilt = self._aware >= thresh
         self._k     = np.where(self._guilt, self._aware / 7.0, 0.0)
 
     def _motivation(self) -> None:
-        """Set m_st to H/L for guilty households; non-guilty households retain prior value."""
+        """Update m_st only for guilty households (non-guilty retain prior value)."""
         thr = MOTIVATION_THRESH[self.case_study]
         pn1_thr, sn1_thr = thr["m1"]
         pn2_thr, sn2_thr = thr["m2"]
@@ -404,22 +442,16 @@ class BENCHv4:
         self._m_st[g, 2] = (self._pn[g, 2] >= pn3_thr) & (self._sn[g, 2] >= sn3_thr)
 
     def _consideration(self) -> None:
-        """
-        Evaluate PBC constraints for each behaviour.
-        Only updates households whose motivation status is H;
-        others retain their prior consideration status (sticky).
-        """
+        """Update cX_st only where motivation is H (sticky otherwise)."""
         pbc_inv = PBC_INVEST_THRESH[self.case_study]
         pbc_sw  = PBC_SWITCH_THRESH[self.case_study]
         owner   = self._dw_st == 1
 
-        # Investment: update only where m1 is H
         if self.investment:
             m = self._m_st[:, 0]
             for j in range(3):
                 self._cI_st[m, j] = (self._pbcI[m, j] >= pbc_inv) & owner[m]
 
-        # Conservation: update only where m2 is H
         m = self._m_st[:, 1]
         for j in range(3):
             self._cC_st[m, j] = (
@@ -427,60 +459,47 @@ class BENCHv4:
                 (self._ene_pat[m, j] != 3)
             )
 
-        # Switching: update only where m3 is H
         m = self._m_st[:, 2]
         for j in range(3):
             self._cS_st[m, j] = self._pbcS[m, j] >= pbc_sw
 
     def _utility(self) -> None:
-        """Calculate renovation utility U1; zero for non-eligible households."""
         c = UTILITY_COEF
         self._U1[:] = 0.0
         mask = self._cI_st[:, 0]
         self._U1[mask] = (
-              self._edu[mask].astype(np.float64)      * c["edu"]
-            + self._age[mask].astype(np.float64)      * c["age"]
-            + self._dw_elab[mask].astype(np.float64)  * c["dw_elab"]
-            + self._dw_type[mask].astype(np.float64)  * c["dw_type"]
-            + self._dw_age[mask].astype(np.float64)   * c["dw_age"]
-            + self._dw_size[mask].astype(np.float64)  * c["dw_size"]
+              self._edu[mask].astype(np.float64)     * c["edu"]
+            + self._age[mask].astype(np.float64)     * c["age"]
+            + self._dw_elab[mask].astype(np.float64) * c["dw_elab"]
+            + self._dw_type[mask].astype(np.float64) * c["dw_type"]
+            + self._dw_age[mask].astype(np.float64)  * c["dw_age"]
+            + self._dw_size[mask].astype(np.float64) * c["dw_size"]
             + self._gas[mask]    * c["gas"]
             + self._pn[mask, 0]  * c["pn1"]
             + self._erI[mask, 0]
         )
 
     def _action(self) -> None:
-        """Decide whether to renovate; mirrors action procedure."""
-        eligible = (
-            (self._U1 > 0)
-            & ~self._invest1
-            & ~self._insulated
-            & (self._dw_elab > 1)
-        )
+        eligible       = (self._U1 > 0) & ~self._invest1 & ~self._insulated & (self._dw_elab > 1)
         self._act1     = eligible
         self._invest1 |= eligible
         self.a1_cum   += int(np.sum(eligible))
 
     def _save_energy(self) -> None:
-        """Calculate gas savings for renovating households."""
         self._save_a0[:] = 0.0
         m = self._act1
         self._save_a0[m] = self._gas[m] * GAS_SAVE_FRACTION
         self._gas[m]    -= self._save_a0[m]
 
     def _invest(self) -> None:
-        """Record investment cost for renovating households."""
         self._invs_a0[:] = 0.0
         self._invs_a0[self._act1] = I1_COST
 
     def _learn(self) -> None:
         """
-        Social learning and information diffusion.
-
-        Informative: broadcast +5% knowledge boost to all households.
-        Slow/Fast/Informative social: active households (act1 OR invest1)
-            boost their spatial neighbours.  Slow requires >4 neighbours;
-            Fast and Informative update regardless of count.
+        Social learning.  Option B: collect unique candidate neighbours once,
+        compute each neighbour's stats a single time (avoids redundant recomputation
+        when j borders multiple active agents), then apply updates.
         """
         if self.learning == "No learning":
             return
@@ -494,71 +513,73 @@ class BENCHv4:
                 m = arr <= lc
                 arr[m] = np.minimum(arr[m] * (1.0 + lr), lc + lr)
 
-        # Social learning from active households to their neighbours
         active_idx = np.where(self._act1 | self._invest1)[0]
+        if len(active_idx) == 0:
+            return
+
         slow = (self.learning == "Slow dynamics")
 
+        # --- Option B: collect unique candidates, compute stats once each ---
+        cand: set = set()
         for i in active_idx:
-            # Self-boost pbcI[0]
+            for jv in self._nbr_idx[i]:
+                cand.add(int(jv))
+
+        nbr_know:  Dict[int, float] = {}
+        nbr_cee:   Dict[int, float] = {}
+        nbr_ed:    Dict[int, float] = {}
+        nbr_pn1:   Dict[int, float] = {}
+        nbr_sn1:   Dict[int, float] = {}
+        nbr_pbcI1: Dict[int, float] = {}
+        for j in cand:
+            nn = self._nbr_idx[j]
+            if len(nn) == 0:
+                continue
+            nbr_know[j]   = _max_mean_median_arr(self._know[nn])
+            nbr_cee[j]    = _max_mean_median_arr(self._cee_aw[nn])
+            nbr_ed[j]     = _max_mean_median_arr(self._ed_aw[nn])
+            nbr_pn1[j]    = _max_mean_median_arr(self._pn[nn, 0])
+            nbr_sn1[j]    = _max_mean_median_arr(self._sn[nn, 0])
+            nbr_pbcI1[j]  = _max_mean_median_arr(self._pbcI[nn, 0])
+
+        # --- Apply social learning from each active agent ---
+        for i in active_idx:
             if self._pbcI[i, 0] < lc:
                 self._pbcI[i, 0] = min(float(self._pbcI[i, 0]) * (1.0 + lr), lc)
 
             nbrs = self._nbr_idx[i]
             if len(nbrs) == 0:
                 continue
-
-            # Each neighbour computes stats from its OWN patch-neighbours
-            ngb_k:     Dict[int, float] = {}
-            ngb_ca:    Dict[int, float] = {}
-            ngb_ed:    Dict[int, float] = {}
-            ngb_pn1:   Dict[int, float] = {}
-            ngb_sn1:   Dict[int, float] = {}
-            ngb_pbcI1: Dict[int, float] = {}
-            for j in nbrs:
-                nn = self._nbr_idx[j]
-                if len(nn) == 0:
-                    continue
-                ngb_k[j]     = _max_mean_median_arr(self._know[nn])
-                ngb_ca[j]    = _max_mean_median_arr(self._cee_aw[nn])
-                ngb_ed[j]    = _max_mean_median_arr(self._ed_aw[nn])
-                ngb_pn1[j]   = _max_mean_median_arr(self._pn[nn, 0])
-                ngb_sn1[j]   = _max_mean_median_arr(self._sn[nn, 0])
-                ngb_pbcI1[j] = _max_mean_median_arr(self._pbcI[nn, 0])
-
-            # Slow dynamics: skip if active hh does not have enough neighbours
             if slow and len(nbrs) <= SLOW_NEIGHBOR_MIN:
                 continue
 
             for j in nbrs:
-                if j not in ngb_k:
+                if j not in nbr_know:
                     continue
-                if self._know[j]   < ngb_k[j]     and self._know[j]   < lc:
+                if self._know[j]   < nbr_know[j]   and self._know[j]   < lc:
                     self._know[j]   = min(float(self._know[j])   * (1.0 + lr), lc)
-                if self._cee_aw[j] < ngb_ca[j]    and self._cee_aw[j] < lc:
+                if self._cee_aw[j] < nbr_cee[j]    and self._cee_aw[j] < lc:
                     self._cee_aw[j] = min(float(self._cee_aw[j]) * (1.0 + lr), lc)
-                if self._ed_aw[j]  < ngb_ed[j]    and self._ed_aw[j]  < lc:
+                if self._ed_aw[j]  < nbr_ed[j]     and self._ed_aw[j]  < lc:
                     self._ed_aw[j]  = min(float(self._ed_aw[j])  * (1.0 + lr), lc)
-                if self._pn[j, 0]  < ngb_pn1[j]   and self._pn[j, 0]  < lc:
+                if self._pn[j, 0]  < nbr_pn1[j]    and self._pn[j, 0]  < lc:
                     self._pn[j, 0]  = min(float(self._pn[j, 0])  * (1.0 + lr), lc)
-                if self._sn[j, 0]  < ngb_sn1[j]   and self._sn[j, 0]  < lc:
+                if self._sn[j, 0]  < nbr_sn1[j]    and self._sn[j, 0]  < lc:
                     self._sn[j, 0]  = min(float(self._sn[j, 0])  * (1.0 + lr), lc)
-                if self._pbcI[j,0] < ngb_pbcI1[j] and self._pbcI[j,0] < lc:
+                if self._pbcI[j,0] < nbr_pbcI1[j]  and self._pbcI[j,0] < lc:
                     self._pbcI[j,0] = min(float(self._pbcI[j,0]) * (1.0 + lr), lc)
 
     def _update_income(self) -> None:
-        """Multiply household income by CGE growth factor."""
         if self.n >= len(self.cge):
             return
         self._income *= self.cge[self.n]
 
     def _update_energy(self) -> None:
-        """Improve energy label for renovating households."""
         m = self._act1
         self._dw_elab[m & (self._dw_elab >= 2)] -= 1
         self._efficient[m & (self._dw_elab == 1)] = True
 
     def _update_memory(self) -> None:
-        """Tick cooldown counters and reset invest1 after the cooldown expires."""
         self._act1_year[self._invest1] += 1
         cooldowns = _COOLDOWN_LUT[self._dw_age]
         expired = self._act1_year >= cooldowns
@@ -579,7 +600,6 @@ class BENCHv4:
             total_by_dwage[cat] = int(np.sum(age_mask))
             renov_by_dwage[cat] = int(np.sum(self._act1 & age_mask))
 
-        # Groups 5-7 all map to bucket 5
         g_arr = np.where(self._h_group <= 4, self._h_group, 5)
         renov_by_group: Dict[int, int] = {}
         total_by_group: Dict[int, int] = {}
