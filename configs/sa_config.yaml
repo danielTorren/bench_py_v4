@@ -16,7 +16,7 @@ memory: true
 
 n_samples: 1024         # SALib base sample count N
 n_seeds: 64            # random seeds averaged per parameter set
-calc_second_order: false
+calc_second_order: true
 n_jobs: -1             # parallel workers: -1 = all available cores, or set a fixed number
 
 output_dir: output
@@ -34,23 +34,5 @@ parameters:
   - name: motivation_m1_sn   # social-norm threshold for investment motivation
     bounds: [0.1, 6.9]       # base NL: 3.5  (ES: 4.77)
 
-  - name: motivation_m2_pn   # personal-norm threshold for conservation motivation
-    bounds: [0.1, 6.9]       # base NL: 4.8  (ES: 5.40)
-
-  - name: motivation_m2_sn   # social-norm threshold for conservation motivation
-    bounds: [0.1, 6.9]       # base NL: 3.6  (ES: 4.45)
-
-  - name: motivation_m3_pn   # personal-norm threshold for switching motivation
-    bounds: [0.1, 6.9]       # base NL: 4.8  (ES: 5.78)
-
-  - name: motivation_m3_sn   # social-norm threshold for switching motivation
-    bounds: [0.1, 6.9]       # base NL: 3.7  (ES: 5.05)
-
   - name: pbc_invest          # perceived-behavioural-control threshold for investment
     bounds: [0.1, 6.9]       # base NL: 1.0  (ES: 2.2)
-
-  - name: pbc_conserv         # PBC threshold for conservation (same both countries)
-    bounds: [0.1, 6.9]       # base NL/ES: 1.0
-
-  - name: pbc_switch          # PBC threshold for switching
-    bounds: [0.1, 6.9]       # base NL: 1.0  (ES: 3.5)
