@@ -24,7 +24,6 @@ go() procedure order (unchanged from NetLogo):
 import csv
 import math
 import os
-import random
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -171,8 +170,7 @@ class BENCHv4:
         if seed is None:
             seed = 1
         self.seed = seed
-        random.seed(seed)                          # kept for API compatibility
-        self._np_rng = np.random.default_rng(seed) # all draws use this
+        self._np_rng = np.random.default_rng(seed)
 
         if data_dir is None:
             here = Path(__file__).parent.parent
@@ -182,10 +180,8 @@ class BENCHv4:
         self.year: int = START_YEAR
         self.n:    int = 0
 
-        self.households: List = []   # kept as empty list for API compatibility
         self.cge: List[float] = []
         self.history: List[AnnualStats] = []
-        self.a1_cum: int = 0
 
     # ------------------------------------------------------------------
     # Public interface
@@ -248,7 +244,7 @@ class BENCHv4:
         self.cge = _load_cge(fpath)
 
     def _create_arrays(self) -> None:
-        """Create all agent attribute arrays using numpy batch draws (no Household objects)."""
+        """Create all agent attribute arrays using numpy batch draws."""
         N   = self.n_households
         rng = self._np_rng
         groups_list = ES_GROUPS if self.case_study == "ES" else NL_GROUPS
@@ -358,7 +354,6 @@ class BENCHv4:
         self._invest1   = np.zeros(N, dtype=bool)
         self._act1_year = np.zeros(N, dtype=np.int32)
         self._insulated = np.zeros(N, dtype=bool)
-        self._efficient = np.zeros(N, dtype=bool)
 
         self._save_a0 = np.zeros(N, dtype=np.float64)
         self._invs_a0 = np.zeros(N, dtype=np.float64)
@@ -483,7 +478,6 @@ class BENCHv4:
         eligible       = (self._U1 > 0) & ~self._invest1 & ~self._insulated & (self._dw_elab > 1)
         self._act1     = eligible
         self._invest1 |= eligible
-        self.a1_cum   += int(np.sum(eligible))
 
     def _save_energy(self) -> None:
         self._save_a0[:] = 0.0
@@ -577,7 +571,6 @@ class BENCHv4:
     def _update_energy(self) -> None:
         m = self._act1
         self._dw_elab[m & (self._dw_elab >= 2)] -= 1
-        self._efficient[m & (self._dw_elab == 1)] = True
 
     def _update_memory(self) -> None:
         self._act1_year[self._invest1] += 1
