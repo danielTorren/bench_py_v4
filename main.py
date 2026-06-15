@@ -48,6 +48,7 @@ Skip plotting (data only):
 import argparse
 import os
 import sys
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
@@ -93,24 +94,33 @@ def _run_and_save_tagged(si, case, learning, seed, memory, run_label_i, runs_dir
     return si, model
 
 
-def _print_mean_table(all_models, case, learning):
-    from collections import defaultdict
-    accum = defaultdict(lambda: defaultdict(list))
+def _print_mean_table(all_models, case: str, learning: str) -> None:
+    """Print mean annual renovation rates across all seeds for one scenario."""
+    if not all_models:
+        return
+    accum: dict = defaultdict(lambda: defaultdict(list))
     for model in all_models:
         n_hh = model.n_households
         for s in model.history:
-            pct = 100 * s.n_renovated / n_hh if n_hh else 0
+            pct = 100 * s.n_renovated / n_hh if n_hh else 0.0
             accum["all"][s.year].append(pct)
             for cat in (1, 2, 3):
                 t = s.total_by_dwage.get(cat, 0)
-                p = 100 * s.renov_by_dwage.get(cat, 0) / t if t else 0
+                p = 100 * s.renov_by_dwage.get(cat, 0) / t if t else 0.0
                 accum[f"dwage{cat}"][s.year].append(p)
 
+    def mean(vals: list) -> float:
+        return sum(vals) / len(vals) if vals else 0.0
+
     n = len(all_models)
-    for yr in sorted(accum["all"].keys()):
-        def m(key):
-            v = accum[key][yr]
-            return sum(v) / len(v) if v else 0.0
+    print(f"\n{case} / {learning}  ({n} run{'s' if n != 1 else ''})")
+    print(f"  {'Year':>4}  {'All%':>6}  {'New%':>6}  {'Mid%':>6}  {'Old%':>6}")
+    for yr in sorted(accum["all"]):
+        print(f"  {yr:>4}  "
+              f"{mean(accum['all'][yr]):>5.2f}%  "
+              f"{mean(accum['dwage1'][yr]):>5.2f}%  "
+              f"{mean(accum['dwage2'][yr]):>5.2f}%  "
+              f"{mean(accum['dwage3'][yr]):>5.2f}%")
 
 
 
@@ -159,8 +169,6 @@ def main():
     t0 = datetime.now()
     
     if args.config:
-        from collections import defaultdict
-
         scenarios   = _load_yaml(args.config)
         config_stem = Path(args.config).stem
         parent_dir  = _make_config_dir(args.output_dir, config_stem)
@@ -232,7 +240,7 @@ def main():
         print(f"\nAll done.  Results in: {parent_dir}")
 
     else:
-       raise ValueError("Single-run mode is no longer supported. Please use --config with a YAML scenario file.")
+            parser.error("--config is required. Use: python main.py --config <yaml_file>")
     
     elapsed = datetime.now() - t0
     print(f"\nCompleted in {str(elapsed).split('.')[0]}")

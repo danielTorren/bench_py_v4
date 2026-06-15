@@ -13,6 +13,16 @@ def save_run(model, run_dir: str) -> None:
     _save_summary(model, run_dir)
 
 
+def _pct_by_dwage(s, cat: int) -> float:
+    t = s.total_by_dwage.get(cat, 0)
+    return 100.0 * s.renov_by_dwage.get(cat, 0) / t if t else 0.0
+
+
+def _pct_by_group(s, g: int) -> float:
+    t = s.total_by_group.get(g, 0)
+    return 100.0 * s.renov_by_group.get(g, 0) / t if t else 0.0
+
+
 def _save_annual_results(model, run_dir: str) -> None:
     path = os.path.join(run_dir, "annual_results.csv")
     n_hh = model.n_households
@@ -40,25 +50,17 @@ def _save_annual_results(model, run_dir: str) -> None:
             pct_con = 100.0 * s.n_conservation / n_hh if n_hh else 0.0
             pct_sw  = 100.0 * s.n_switching    / n_hh if n_hh else 0.0
 
-            def pct_dw(cat):
-                t = s.total_by_dwage.get(cat, 0)
-                return 100.0 * s.renov_by_dwage.get(cat, 0) / t if t else 0.0
-
-            def pct_grp(g):
-                t = s.total_by_group.get(g, 0)
-                return 100.0 * s.renov_by_group.get(g, 0) / t if t else 0.0
-
             for cat in (1, 2, 3):
-                cum[cat] += pct_dw(cat)
+                cum[cat] += _pct_by_dwage(s, cat)
 
             writer.writerow([
                 s.year,
                 s.n_renovated, s.n_conservation, s.n_switching,
                 round(pct, 4), round(pct_con, 4), round(pct_sw, 4),
-                round(pct_dw(1), 4), round(pct_dw(2), 4), round(pct_dw(3), 4),
+                round(_pct_by_dwage(s, 1), 4), round(_pct_by_dwage(s, 2), 4), round(_pct_by_dwage(s, 3), 4),
                 round(cum[1], 4), round(cum[2], 4), round(cum[3], 4),
-                round(pct_grp(1), 4), round(pct_grp(2), 4), round(pct_grp(3), 4),
-                round(pct_grp(4), 4), round(pct_grp(5), 4),
+                round(_pct_by_group(s, 1), 4), round(_pct_by_group(s, 2), 4), round(_pct_by_group(s, 3), 4),
+                round(_pct_by_group(s, 4), 4), round(_pct_by_group(s, 5), 4),
                 round(s.total_gas_saved, 2),
                 round(s.total_energy_conservation, 2),
                 round(s.total_energy_switching, 2),

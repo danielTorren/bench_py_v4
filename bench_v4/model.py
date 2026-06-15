@@ -1,24 +1,23 @@
 """
-BENCH v4 — Python translation of BENCH_v04_B-NLD.ESP.nlogox.
-Vectorized: agent attributes stored as numpy arrays; per-agent loops replaced
-with array operations.  All random draws use self._np_rng (numpy Generator)
-so initialization is fast; Python's random is seeded for compatibility only.
+BENCH v4 — vectorized Python ABM for household energy renovation.
 
-go() procedure order (unchanged from NetLogo):
-    update.info     → _update_info
-    recallmemory    → _recall_memory
-    update.dwelling → _update_dwelling
-    knowledge       → _knowledge
-    motivation      → _motivation
-    consideration   → _consideration
-    utility         → _utility
-    action          → _action
-    save.energy     → _save_energy   (year >= 2017)
-    invest          → _invest        (year >= 2017)
-    learn           → _learn         (year >= 2017)
-    update.income   → _update_income
-    update.energy   → _update_energy (year >= 2017)
-    update.memory   → _update_memory
+Agent attributes are stored as numpy arrays; all random draws use
+self._np_rng (numpy Generator).
+
+Tick procedure order:
+    _recall_memory      pre-2016 renovation status (first tick only)
+    _update_dwelling    probabilistic dw_age update (from 2025)
+    _knowledge          awareness → guilt → knowledge score
+    _motivation         personal/social norm gates
+    _consideration      PBC gates (sticky)
+    _utility            U1 probit score for investment
+    _action             renovation decision
+    _update_income      CGE income scaling          (every year)
+    _save_energy        gas savings                 (from 2017)
+    _invest             investment cost tracking    (from 2017)
+    _learn              social learning             (from 2017)
+    _update_energy      dw_elab degradation        (from 2017)
+    _update_memory      cooldown / invest1 reset
 """
 
 import csv
@@ -26,7 +25,6 @@ import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -40,18 +38,21 @@ from .params import (
     LEARNING_RATE, LEARNING_CAP, SLOW_NEIGHBOR_MIN,
     RECALL_PROB, DWAGE_UPDATE,
     START_YEAR, END_YEAR,
-    GRID_MIN, GRID_MAX,
+    GRID_HALF,
 )
 
-# Cooldown lookup indexed by dw_age value (1→15, 2→7, 3→2; index 0 unused)
-_COOLDOWN_LUT = np.array([0, 15, 7, 2], dtype=np.int32)
+# Numpy LUT derived from COOLDOWN_BY_DWAGE; index 0 unused (dw_age is 1-3)
+_COOLDOWN_LUT = np.array(
+    [0] + [COOLDOWN_BY_DWAGE[k] for k in sorted(COOLDOWN_BY_DWAGE)],
+    dtype=np.int32,
+)
 
 
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
 
-def _load_cge(filepath: str) -> List[float]:
+def _load_cge(filepath: str) -> list[float]:
     values = []
     with open(filepath, newline="") as f:
         reader = csv.reader(f)
@@ -126,10 +127,10 @@ class AnnualStats:
     high_m1_pct: float
     high_m2_pct: float
     high_m3_pct: float
-    renov_by_dwage: Dict[int, int] = field(default_factory=dict)
-    total_by_dwage: Dict[int, int] = field(default_factory=dict)
-    renov_by_group: Dict[int, int] = field(default_factory=dict)
-    total_by_group: Dict[int, int] = field(default_factory=dict)
+    renov_by_dwage: dict[int, int] = field(default_factory=dict)
+    total_by_dwage: dict[int, int] = field(default_factory=dict)
+    renov_by_group: dict[int, int] = field(default_factory=dict)
+    total_by_group: dict[int, int] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -154,12 +155,12 @@ class BENCHv4:
     def __init__(
         self,
         case_study: str = "NL",
-        seed: Optional[int] = None,
+        seed: int | None = None,
         learning: str = "Informative",
         memory: bool = True,
         investment: bool = True,
-        data_dir: Optional[str] = None,
-        n_households: Optional[int] = None,
+        data_dir: str | None = None,
+        n_households: int | None = None,
     ):
         self.case_study   = case_study
         self.learning     = learning
@@ -180,8 +181,8 @@ class BENCHv4:
         self.year: int = START_YEAR
         self.n:    int = 0
 
-        self.cge: List[float] = []
-        self.history: List[AnnualStats] = []
+        self.cge: list[float] = []
+        self.history: list[AnnualStats] = []
 
     # ------------------------------------------------------------------
     # Public interface
@@ -197,7 +198,7 @@ class BENCHv4:
         if self.year > END_YEAR:
             return False
 
-        self._update_info()
+        self._act1[:] = False
         self._recall_memory()
         self._update_dwelling()
 
@@ -207,22 +208,20 @@ class BENCHv4:
         self._utility()
         self._action()
 
+        self._update_income()
         if self.year >= 2017:
             self._save_energy()
             self._invest()
             self._learn()
-
-        self._update_income()
-        if self.year >= 2017:
             self._update_energy()
-        self._update_memory()
 
+        self._update_memory()
         self.history.append(self._collect_stats())
         self.year += 1
         self.n    += 1
         return True
 
-    def run(self, verbose: bool = False) -> List[AnnualStats]:
+    def run(self, verbose: bool = False) -> list[AnnualStats]:
         self.setup()
         while self.go():
             if verbose:
@@ -251,12 +250,12 @@ class BENCHv4:
 
         # --- Group assignment ---
         rn_group   = rng.uniform(0, 100, N)
-        cum_uppers = [g[0] for g in groups_list]
+        cum_uppers = [gp.cum_upper for gp in groups_list]
         gi_arr     = np.clip(
             np.searchsorted(cum_uppers, rn_group, side='right'),
             0, len(groups_list) - 1,
         )
-        self._h_group = np.array([g[1] for g in groups_list], dtype=np.int8)[gi_arr]
+        self._h_group = np.array([gp.group_id for gp in groups_list], dtype=np.int8)[gi_arr]
 
         # --- Pre-allocate attribute arrays ---
         self._income  = np.empty(N, dtype=np.float64)
@@ -280,64 +279,64 @@ class BENCHv4:
         self._erI     = np.empty((N, 3), dtype=np.float64)
 
         # --- Fill each group in one batch ---
-        for gi, (_, _gid, p) in enumerate(groups_list):
+        for gi, gp in enumerate(groups_list):
             mask = gi_arr == gi
             n_g  = int(np.sum(mask))
             if n_g == 0:
                 continue
 
-            lo, hi, st = p["income_range"]
+            lo, hi, st = gp.income_range
             self._income[mask] = _rand_num_vec(rng, lo, hi, st, n_g)
 
-            lo, hi, st = p["gas_range"]
+            lo, hi, st = gp.gas_range
             self._gas[mask] = _rand_num_vec(rng, lo, hi, st, n_g)
 
-            lo, hi = p["know_range"]
+            lo, hi = gp.know_range
             self._know[mask] = _rand_num_vec(rng, lo, hi, 0.05, n_g)
 
-            lo, hi = p["cee_aw_range"]
+            lo, hi = gp.cee_aw_range
             self._cee_aw[mask] = _rand_num_vec(rng, lo, hi, 0.05, n_g)
 
-            lo, hi = p["ed_aw_range"]
+            lo, hi = gp.ed_aw_range
             self._ed_aw[mask] = _rand_num_vec(rng, lo, hi, 0.05, n_g)
 
-            pn_lo, pn_hi = p["pn_range"]
+            pn_lo, pn_hi = gp.pn_range
             for j in range(3):
                 self._pn[mask, j] = _rand_num_vec(rng, pn_lo, pn_hi, 0.05, n_g)
 
-            sn_lo, sn_hi = p["sn_range"]
+            sn_lo, sn_hi = gp.sn_range
             for j in range(3):
                 self._sn[mask, j] = _rand_num_vec(rng, sn_lo, sn_hi, 0.05, n_g)
 
-            pbcI_lo, pbcI_hi = p["pbcI_range"]
+            pbcI_lo, pbcI_hi = gp.pbcI_range
             for j in range(3):
                 self._pbcI[mask, j] = _rand_num_vec(rng, pbcI_lo, pbcI_hi, 0.05, n_g)
 
-            pbcC_lo, pbcC_hi = p["pbcC_range"]
+            pbcC_lo, pbcC_hi = gp.pbcC_range
             for j in range(3):
                 self._pbcC[mask, j] = _rand_num_vec(rng, pbcC_lo, pbcC_hi, 0.05, n_g)
 
-            pbcS_lo, pbcS_hi = p["pbcS_range"]
+            pbcS_lo, pbcS_hi = gp.pbcS_range
             for j in range(3):
                 self._pbcS[mask, j] = _rand_num_vec(rng, pbcS_lo, pbcS_hi, 0.05, n_g)
 
-            ep_lo, ep_hi = p["ene_pat_range"]
+            ep_lo, ep_hi = gp.ene_pat_range
             for j in range(3):
                 self._ene_pat[mask, j] = _rand_num_vec(rng, ep_lo, ep_hi, 0.05, n_g)
 
             for j in range(3):
-                self._erI[mask, j] = _rand_er_vec(rng, p["erI_ranges"][j], n_g)
+                self._erI[mask, j] = _rand_er_vec(rng, gp.erI_ranges[j], n_g)
 
-            self._edu[mask]     = _categorical_vec(rng, p["edu_breaks"],    n_g)
-            self._age[mask]     = _categorical_vec(rng, p["age_breaks"],    n_g)
-            self._dw_age[mask]  = _categorical_vec(rng, p["dwage_breaks"],  n_g)
-            self._dw_size[mask] = _categorical_vec(rng, p["dwsize_breaks"], n_g)
-            self._dw_elab[mask] = _categorical_vec(rng, p["elab_breaks"],   n_g)
+            self._edu[mask]     = _categorical_vec(rng, gp.edu_breaks,    n_g)
+            self._age[mask]     = _categorical_vec(rng, gp.age_breaks,    n_g)
+            self._dw_age[mask]  = _categorical_vec(rng, gp.dwage_breaks,  n_g)
+            self._dw_size[mask] = _categorical_vec(rng, gp.dwsize_breaks, n_g)
+            self._dw_elab[mask] = _categorical_vec(rng, gp.elab_breaks,   n_g)
 
             self._dw_st[mask]   = np.where(
-                rng.uniform(0, 100, n_g) < p["owner_thresh"], np.int8(1), np.int8(2))
+                rng.uniform(0, 100, n_g) < gp.owner_thresh, np.int8(1), np.int8(2))
             self._dw_type[mask] = np.where(
-                rng.uniform(0, 100, n_g) < p["dtype_thresh"], np.int8(1), np.int8(2))
+                rng.uniform(0, 100, n_g) < gp.dtype_thresh, np.int8(1), np.int8(2))
 
         # --- Simulation state (all zero / False at start) ---
         self._aware  = np.zeros(N, dtype=np.float64)
@@ -361,7 +360,7 @@ class BENCHv4:
     def _place_on_grid(self) -> None:
         """Draw grid positions; scale preserves ~0.1 agents/cell density."""
         scale = math.sqrt(self.n_households / N_HOUSEHOLDS[self.case_study])
-        half  = max(1, round((GRID_MAX - GRID_MIN) / 2 * scale))
+        half  = max(1, round(GRID_HALF * scale))
         self._grid_min = -half
         self._grid_max =  half
         self._grid_x = self._np_rng.integers(-half, half + 1,
@@ -371,17 +370,17 @@ class BENCHv4:
 
     def _build_neighbor_index(self) -> None:
         """Precompute _nbr_idx[i] = array of agent indices on the 8 adjacent patches."""
-        grid_dict: Dict[Tuple[int, int], List[int]] = {}
+        grid_dict: dict[tuple[int, int], list[int]] = {}
         for i in range(self.n_households):
             key = (int(self._grid_x[i]), int(self._grid_y[i]))
             if key not in grid_dict:
                 grid_dict[key] = []
             grid_dict[key].append(i)
 
-        self._nbr_idx: List[np.ndarray] = []
+        self._nbr_idx: list[np.ndarray] = []
         for i in range(self.n_households):
             gx, gy = int(self._grid_x[i]), int(self._grid_y[i])
-            nbrs: List[int] = []
+            nbrs: list[int] = []
             for dx in (-1, 0, 1):
                 for dy in (-1, 0, 1):
                     if dx == 0 and dy == 0:
@@ -392,9 +391,6 @@ class BENCHv4:
     # ------------------------------------------------------------------
     # go() sub-routines
     # ------------------------------------------------------------------
-
-    def _update_info(self) -> None:
-        self._act1[:] = False
 
     def _recall_memory(self) -> None:
         """Assign pre-2016 renovation status (vectorised via numpy RNG)."""
@@ -519,12 +515,12 @@ class BENCHv4:
             for jv in self._nbr_idx[i]:
                 cand.add(int(jv))
 
-        nbr_know:  Dict[int, float] = {}
-        nbr_cee:   Dict[int, float] = {}
-        nbr_ed:    Dict[int, float] = {}
-        nbr_pn1:   Dict[int, float] = {}
-        nbr_sn1:   Dict[int, float] = {}
-        nbr_pbcI1: Dict[int, float] = {}
+        nbr_know:  dict[int, float] = {}
+        nbr_cee:   dict[int, float] = {}
+        nbr_ed:    dict[int, float] = {}
+        nbr_pn1:   dict[int, float] = {}
+        nbr_sn1:   dict[int, float] = {}
+        nbr_pbcI1: dict[int, float] = {}
         for j in cand:
             nn = self._nbr_idx[j]
             if len(nn) == 0:
@@ -586,16 +582,16 @@ class BENCHv4:
     def _collect_stats(self) -> AnnualStats:
         N = self.n_households
 
-        renov_by_dwage: Dict[int, int] = {}
-        total_by_dwage: Dict[int, int] = {}
+        renov_by_dwage: dict[int, int] = {}
+        total_by_dwage: dict[int, int] = {}
         for cat in (1, 2, 3):
             age_mask = self._dw_age == cat
             total_by_dwage[cat] = int(np.sum(age_mask))
             renov_by_dwage[cat] = int(np.sum(self._act1 & age_mask))
 
         g_arr = np.where(self._h_group <= 4, self._h_group, 5)
-        renov_by_group: Dict[int, int] = {}
-        total_by_group: Dict[int, int] = {}
+        renov_by_group: dict[int, int] = {}
+        total_by_group: dict[int, int] = {}
         for g in range(1, 6):
             grp_mask = g_arr == g
             total_by_group[g] = int(np.sum(grp_mask))
@@ -630,7 +626,7 @@ class BENCHv4:
     # Output helpers
     # ------------------------------------------------------------------
 
-    def renovation_rate_by_vintage(self) -> Dict[int, List[float]]:
+    def renovation_rate_by_vintage(self) -> dict[int, list[float]]:
         result = {1: [], 2: [], 3: []}
         for s in self.history:
             for cat in (1, 2, 3):
@@ -639,7 +635,7 @@ class BENCHv4:
                 result[cat].append(100.0 * ren / tot if tot > 0 else 0.0)
         return result
 
-    def renovation_rate_by_income(self) -> Dict[int, List[float]]:
+    def renovation_rate_by_income(self) -> dict[int, list[float]]:
         result = {g: [] for g in range(1, 6)}
         for s in self.history:
             for g in range(1, 6):
@@ -648,7 +644,7 @@ class BENCHv4:
                 result[g].append(100.0 * ren / tot if tot > 0 else 0.0)
         return result
 
-    def years(self) -> List[int]:
+    def years(self) -> list[int]:
         return [s.year for s in self.history]
 
     def summary(self) -> str:
