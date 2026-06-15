@@ -161,12 +161,14 @@ class BENCHv4:
         investment: bool = True,
         data_dir: Optional[str] = None,
         n_households: Optional[int] = None,
+        bypass_consideration: bool = False,
     ):
-        self.case_study   = case_study
-        self.learning     = learning
-        self.memory_on    = memory
-        self.investment   = investment
-        self.n_households = n_households or N_HOUSEHOLDS[case_study]
+        self.case_study           = case_study
+        self.learning             = learning
+        self.memory_on            = memory
+        self.investment           = investment
+        self.bypass_consideration = bypass_consideration
+        self.n_households         = n_households or N_HOUSEHOLDS[case_study]
 
         if seed is None:
             seed = 1
@@ -443,6 +445,10 @@ class BENCHv4:
 
     def _consideration(self) -> None:
         """Update cX_st only where motivation is H (sticky otherwise)."""
+        if self.bypass_consideration:
+            self._cI_st[:, 0] = True   # all agents eligible for utility computation
+            return
+
         pbc_inv = PBC_INVEST_THRESH[self.case_study]
         pbc_sw  = PBC_SWITCH_THRESH[self.case_study]
         owner   = self._dw_st == 1
