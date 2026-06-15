@@ -58,6 +58,30 @@ def _olabel(name):
 
 
 # ---------------------------------------------------------------------------
+# Console output
+# ---------------------------------------------------------------------------
+
+def _print_indices(doc):
+    param_names  = doc["param_names"]
+    output_names = doc["output_names"]
+    indices      = doc["indices"]
+    col_w = max(len(_plabel(p) or p) for p in param_names)
+
+    for out_name in output_names:
+        idx = indices[out_name]
+        S1      = idx["S1"]
+        ST      = idx["ST"]
+        S1_conf = idx["S1_conf"]
+        ST_conf = idx["ST_conf"]
+        print(f"\n{_olabel(out_name)}")
+        print(f"  {'Parameter':<{col_w}}   {'S1':>8}  {'±':>8}   {'ST':>8}  {'±':>8}")
+        print(f"  {'-'*col_w}   {'--------'}  {'--------'}   {'--------'}  {'--------'}")
+        for i, p in enumerate(param_names):
+            print(f"  {_plabel(p):<{col_w}}   {S1[i]:>8.5f}  {S1_conf[i]:>8.5f}   {ST[i]:>8.5f}  {ST_conf[i]:>8.5f}")
+    print()
+
+
+# ---------------------------------------------------------------------------
 # Individual output plots
 # ---------------------------------------------------------------------------
 
@@ -108,8 +132,9 @@ def plot_individual(results_dir, doc, plots_dir):
 
         fname = os.path.join(plots_dir, f"sobol_{out_name}.png")
         fig.savefig(fname, dpi=150, bbox_inches="tight")
-        plt.close(fig)
+        #plt.close(fig)
         print(f"  Saved: sobol_{out_name}.png")
+        #plt.show()
 
 
 # ---------------------------------------------------------------------------
@@ -165,8 +190,9 @@ def plot_summary(results_dir, doc, plots_dir):
     plt.tight_layout()
     fname = os.path.join(plots_dir, "sobol_summary.png")
     fig.savefig(fname, dpi=150, bbox_inches="tight")
-    plt.close(fig)
+    #plt.close(fig)
     print(f"  Saved: sobol_summary.png")
+    #plt.show()
 
 
 # ---------------------------------------------------------------------------
@@ -215,8 +241,9 @@ def plot_s2_heatmaps(doc, plots_dir):
         plt.tight_layout()
         fname = os.path.join(plots_dir, f"sobol_S2_{out_name}.png")
         fig.savefig(fname, dpi=150, bbox_inches="tight")
-        plt.close(fig)
+        #plt.close(fig)
         print(f"  Saved: sobol_S2_{out_name}.png")
+        #   plt.show()
 
 
 # ---------------------------------------------------------------------------
@@ -247,12 +274,13 @@ def main():
     print(f"Outputs : {doc['output_names']}")
     print()
 
+    _print_indices(doc)
     plot_individual(args.results, doc, plots_dir)
     plot_summary(args.results, doc, plots_dir)
     plot_s2_heatmaps(doc, plots_dir)
 
     print(f"\nAll plots saved to: {plots_dir}")
-
+    
 
 if __name__ == "__main__":
     main()
