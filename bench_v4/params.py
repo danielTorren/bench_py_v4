@@ -56,7 +56,7 @@ class GroupParams:
 # Utility function coefficients
 # U1 = edu*a + age*b + dw_elab*c + dw_type*d + dw_age*e + dw_size*f + gas*g + pn1*h + erI1
 # ---------------------------------------------------------------------------
-UTILITY_COEF: dict[str, float] = {
+UTILITY_COEF: dict[str, float] = {#These coefficents are from the probit regression of the survey data, can be found in paper: Demand-side solutions for climate mitigation: Bottom-up drivers of household energy behavior change in the Netherlands and Spain (Energy Research & Social Science, 2020)
     "edu":     0.0563284,
     "age":     0.0008106,
     "dw_elab": -0.0769971,
