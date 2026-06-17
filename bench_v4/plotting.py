@@ -440,6 +440,7 @@ def plot_multi_scenario(parent_dir: str) -> List[str]:
 
 # --- subplot grid helpers ---------------------------------------------------
 
+
 def _ms_grid(rows, cols, per_w, per_h, sharey, sharex=True):
     return plt.subplots(
         len(rows), len(cols),
