@@ -112,15 +112,15 @@ def _print_mean_table(all_models, case: str, learning: str) -> None:
     def mean(vals: list) -> float:
         return sum(vals) / len(vals) if vals else 0.0
 
-    n = len(all_models)
-    print(f"\n{case} / {learning}  ({n} run{'s' if n != 1 else ''})")
-    print(f"  {'Year':>4}  {'All%':>6}  {'New%':>6}  {'Mid%':>6}  {'Old%':>6}")
-    for yr in sorted(accum["all"]):
-        print(f"  {yr:>4}  "
-              f"{mean(accum['all'][yr]):>5.2f}%  "
-              f"{mean(accum['dwage1'][yr]):>5.2f}%  "
-              f"{mean(accum['dwage2'][yr]):>5.2f}%  "
-              f"{mean(accum['dwage3'][yr]):>5.2f}%")
+    #n = len(all_models)
+    #print(f"\n{case} / {learning}  ({n} run{'s' if n != 1 else ''})")
+    #print(f"  {'Year':>4}  {'All%':>6}  {'New%':>6}  {'Mid%':>6}  {'Old%':>6}")
+    #for yr in sorted(accum["all"]):
+    #    print(f"  {yr:>4}  "
+    #          f"{mean(accum['all'][yr]):>5.2f}%  "
+    #          f"{mean(accum['dwage1'][yr]):>5.2f}%  "
+    #          f"{mean(accum['dwage2'][yr]):>5.2f}%  "
+    #          f"{mean(accum['dwage3'][yr]):>5.2f}%")
 
 
 

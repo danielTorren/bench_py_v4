@@ -18,7 +18,7 @@
   learning: No learning
   runs: 64
   memory: true
-  n_households: 100000
+  n_households: 10000
   run_label: NL_NoLearning
   description: Netherlands baseline — no social learning dynamics
 
@@ -26,7 +26,7 @@
   learning: Slow dynamics
   runs: 64
   memory: true
-  n_households: 100000
+  n_households: 10000
   run_label: NL_SlowDynamics
   description: Netherlands — slow neighbourhood social dynamics (>4 neighbours required)
 
@@ -34,7 +34,7 @@
   learning: Fast dynamics
   runs: 64
   memory: true
-  n_households: 100000
+  n_households: 10000
   run_label: NL_FastDynamics
   description: Netherlands — fast neighbourhood social dynamics (no threshold)
 
@@ -42,7 +42,7 @@
   learning: Informative
   runs: 64
   memory: true
-  n_households: 100000
+  n_households: 10000
   run_label: NL_Informative
   description: Netherlands — informative diffusion (all households gain knowledge each year)
 
@@ -54,7 +54,7 @@
   learning: No learning
   runs: 64
   memory: true
-  n_households: 100000
+  n_households: 10000
   run_label: ES_NoLearning
   description: Spain baseline — no social learning dynamics
 
@@ -62,7 +62,7 @@
   learning: Slow dynamics
   runs: 64
   memory: true
-  n_households: 100000
+  n_households: 10000
   run_label: ES_SlowDynamics
   description: Spain — slow neighbourhood social dynamics
 
@@ -70,7 +70,7 @@
   learning: Fast dynamics
   runs: 64
   memory: true
-  n_households: 100000
+  n_households: 10000
   run_label: ES_FastDynamics
   description: Spain — fast neighbourhood social dynamics
 
@@ -78,6 +78,6 @@
   learning: Informative
   runs: 64
   memory: true
-  n_households: 100000
+  n_households: 10000
   run_label: ES_Informative
   description: Spain — informative diffusion

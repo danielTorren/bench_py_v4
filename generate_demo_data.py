@@ -89,6 +89,17 @@ def _run_one(
     import bench_v4.params as _p
     import bench_v4.model as _m
 
+    # Always restore empirical defaults before applying overrides.
+    # Without this, a worker that processed an OFAT job (which patches
+    # _m.GUILT_THRESH etc.) and then picks up a default-scenario job
+    # (overrides={}) would skip the if-block and run with stale patches.
+    _m.GUILT_THRESH      = dict(_p.GUILT_THRESH)
+    _m.PBC_INVEST_THRESH = dict(_p.PBC_INVEST_THRESH)
+    _m.MOTIVATION_THRESH = {
+        cs: {mk: tuple(tv) for mk, tv in inner.items()}
+        for cs, inner in _p.MOTIVATION_THRESH.items()
+    }
+
     if overrides:
         if "guilt" in overrides:
             gt = dict(_p.GUILT_THRESH)
@@ -247,10 +258,20 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Aggregate and serialise
     # ------------------------------------------------------------------
+    from bench_v4.params import N_HOUSEHOLDS as _SURVEY_N  # noqa: PLC0415
+
+    # Resolve actual household count used per case
+    if args.n_households is not None:
+        n_hh_used = {case: args.n_households for case in CASES}
+    else:
+        n_hh_used = {case: _SURVEY_N[case] for case in CASES}
+
     years = [r["year"] for r in results[0]]
 
     output = {
         "years":          years,
+        "n_seeds":        args.seeds,
+        "n_households":   n_hh_used,
         "cases":          CASES,
         "learning_modes": LEARNINGS,
         "params":         {p: {"label": v["label"], "values": v["values"]}
