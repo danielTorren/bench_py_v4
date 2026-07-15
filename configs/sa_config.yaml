@@ -13,6 +13,7 @@
 case_study: NL        # NL or ES
 learning: Slow dynamics # Slow dynamics | Fast dynamics | Informative | No learning
 memory: true
+population: copula
 
 n_households: 10000    # synthetic population size (default: survey size ~759/793)
 n_samples: 512           # number of parameter sets sampled by Sobol method; increase for more stable indices

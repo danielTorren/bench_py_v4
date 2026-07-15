@@ -148,13 +148,19 @@ def _extract_outputs(model):
 
 def _run_one(args):
     """Run a single (eval_idx, seed) model instance and return (eval_idx, outputs)."""
-    case_study, learning, memory, eval_idx, seed, param_names, param_row, n_households = args
+    case_study, learning, memory, eval_idx, seed, param_names, param_row, n_households, population_df = args
     pdict = dict(zip(param_names, param_row))
     with _patched(case_study, pdict):
         model = BENCHv4(case_study=case_study, learning=learning,
-                        memory=memory, seed=seed, n_households=n_households)
+                        memory=memory, seed=seed, n_households=n_households,
+                        population_df=population_df)
         model.run()
         return eval_idx, _extract_outputs(model)
+
+
+def _run_batch(args_list: list) -> list:
+    """Run a batch of _run_one jobs sequentially; reduces serialization overhead."""
+    return [_run_one(a) for a in args_list]
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +221,8 @@ def main():
     learning     = cfg.get("learning", "Informative")
     memory       = cfg.get("memory", True)
     n_households = cfg.get("n_households", None)
+    pop_type     = cfg.get("population", "groupparams")
+    copula_seed  = cfg.get("copula_seed", 1)
     n_samples    = cfg.get("n_samples", 64)
     n_seeds      = cfg.get("n_seeds", 5)
     calc_s2      = cfg.get("calc_second_order", False)
@@ -258,19 +266,62 @@ def main():
     os.makedirs(run_dir, exist_ok=True)
     print(f"Output dir: {run_dir}\n")
 
-    shutil.copy(args.config, os.path.join(run_dir, "sa_config.yaml"))
+    # Save the config file used for this run (reproducibility)
+    shutil.copy(args.config, os.path.join(run_dir, Path(args.config).name))
+
+    # --- Build population (same for all parameter evaluations) ---
+    population_df = None
+    if pop_type != "groupparams":
+        _survey_dir = Path(__file__).parent.parent / "survey_population"
+        sys.path.insert(0, str(_survey_dir))
+        try:
+            from build_population import load_real_population, generate_from_copula  # type: ignore
+            df_real = load_real_population(case_study)
+            if pop_type == "survey755":
+                population_df = df_real
+                n_households  = n_households or len(df_real)
+                print(f"Population  : survey755  ({len(population_df)} real respondents)")
+            elif pop_type == "copula":
+                eff_n = n_households or len(df_real)
+                rng   = np.random.default_rng(copula_seed)
+                population_df = generate_from_copula(df_real, eff_n, rng)
+                n_households  = eff_n
+                print(f"Population  : copula  ({len(population_df):,} synthetic agents, seed={copula_seed})")
+            # Save one copy for reproducibility
+            pop_path = os.path.join(run_dir, f"population_{case_study}_{pop_type}.csv")
+            population_df.to_csv(pop_path, index=False)
+            print(f"  Saved: {pop_path}")
+        except Exception as exc:
+            print(f"WARNING: could not build {pop_type!r} population ({exc}). "
+                  f"Falling back to GroupParams.")
+            population_df = None
+    else:
+        print(f"Population  : groupparams (hardcoded prior)")
 
     # --- Build flat worker arg list: one job per (eval_idx, seed) pair ---
     worker_args = [
         (case_study, learning, memory, i, i * n_seeds + s + 1,
-         param_names, param_matrix[i].tolist(), n_households)
+         param_names, param_matrix[i].tolist(), n_households, population_df)
         for i in range(n_eval)
         for s in range(n_seeds)
     ]
 
-    print(f"Running {n_runs} model runs ...\n")
+    # Batch jobs 4-per-core: each worker gets a chunk of runs so population_df
+    # is serialised once per batch rather than once per individual run.
+    eff_workers = os.cpu_count() or 8
+    if n_jobs not in (-1, None):
+        eff_workers = max(1, abs(n_jobs))
+    n_batches  = max(1, 4 * eff_workers)
+    batch_size = max(1, (n_runs + n_batches - 1) // n_batches)
+    batches    = [worker_args[i:i + batch_size] for i in range(0, n_runs, batch_size)]
+
+    print(f"Running {n_runs} model runs in {len(batches)} batches "
+          f"(~{batch_size} runs/batch, {eff_workers} workers) ...\n")
     t0 = datetime.now()
-    raw = Parallel(n_jobs=n_jobs, verbose=1)(delayed(_run_one)(arg) for arg in worker_args)
+    raw_nested = Parallel(n_jobs=n_jobs, verbose=1)(
+        delayed(_run_batch)(b) for b in batches
+    )
+    raw = [item for sublist in (raw_nested or []) for item in sublist]
     elapsed = datetime.now() - t0
     print(f"\nCompleted in {str(elapsed).split('.')[0]}")
 

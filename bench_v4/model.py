@@ -161,12 +161,18 @@ class BENCHv4:
         investment: bool = True,
         data_dir: str | None = None,
         n_households: int | None = None,
+        population_df=None,
     ):
         self.case_study   = case_study
         self.learning     = learning
         self.memory_on    = memory
         self.investment   = investment
-        self.n_households = n_households or N_HOUSEHOLDS[case_study]
+        self._population_df = population_df
+        self.n_households = (
+            n_households
+            or (len(population_df) if population_df is not None else None)
+            or N_HOUSEHOLDS[case_study]
+        )
 
         if seed is None:
             seed = 1
@@ -190,9 +196,12 @@ class BENCHv4:
 
     def setup(self) -> None:
         self._load_data()
-        self._create_arrays()        # Option A: numpy batch initialization
-        self._place_on_grid()        # numpy grid placement
-        self._build_neighbor_index() # precompute spatial index
+        if self._population_df is not None:
+            self._create_arrays_from_df(self._population_df)
+        else:
+            self._create_arrays()
+        self._place_on_grid()
+        self._build_neighbor_index()
 
     def go(self) -> bool:
         if self.year > END_YEAR:
@@ -357,6 +366,108 @@ class BENCHv4:
         self._save_a0 = np.zeros(N, dtype=np.float64)
         self._invs_a0 = np.zeros(N, dtype=np.float64)
 
+    # ------------------------------------------------------------------
+    # Initialisation — Option B: initialize from a real/synthetic DataFrame
+    # ------------------------------------------------------------------
+
+    def _create_arrays_from_df(self, df) -> None:
+        """Fill agent arrays from a 19-column population DataFrame."""
+        import pandas as pd
+
+        N   = self.n_households
+        rng = self._np_rng
+
+        def _col(name: str, default: float = 0.0) -> np.ndarray:
+            if name in df.columns:
+                return (pd.to_numeric(df[name], errors="coerce")
+                          .fillna(default)
+                          .to_numpy(dtype=np.float64).copy())
+            return np.full(N, default, dtype=np.float64)
+
+        # --- Income bracket → EUR midpoint + group ID ---
+        _INCOME_EUR = {1: 7_500, 2: 22_500, 3: 40_000, 4: 60_000,
+                       5: 80_000, 6: 100_000, 7: 130_000}
+        _INCOME_GRP = {1: 1, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 5}
+        inc_b = np.clip(_col("income", 3).astype(int), 1, 7)
+        self._income  = np.array([_INCOME_EUR.get(int(b), 40_000) for b in inc_b], dtype=np.float64)
+        self._h_group = np.array([_INCOME_GRP.get(int(b), 3)      for b in inc_b], dtype=np.int8)
+
+        # --- Behavioural scalars (float64) ---
+        self._gas    = _col("gas",  1_500.0)
+        self._know   = _col("ceek", 4.0)
+        self._cee_aw = _col("ceea", 4.0)
+        self._ed_aw  = _col("eda",  4.0)
+
+        # PN / SN / PBC: single survey score broadcast to all 3 action columns
+        pn_v  = _col("pn",   4.0)
+        sn_v  = _col("sn",   4.0)
+        pbc1v = _col("pbc1", 4.0)
+        pbc2v = _col("pbc2", 4.0)
+        pbc3v = _col("pbc3", 4.0)
+        self._pn   = np.column_stack([pn_v,  pn_v,  pn_v]).copy()
+        self._sn   = np.column_stack([sn_v,  sn_v,  sn_v]).copy()
+        self._pbcI = np.column_stack([pbc1v, pbc1v, pbc1v]).copy()
+        self._pbcC = np.column_stack([pbc2v, pbc2v, pbc2v]).copy()
+        self._pbcS = np.column_stack([pbc3v, pbc3v, pbc3v]).copy()
+
+        # --- Structural (int8) ---
+        self._dw_type = _col("dw_type", 1).astype(np.int8)
+        self._dw_st   = _col("tenure",  1).astype(np.int8)
+
+        # education: ISCED 1–6 → 3-band (1=low, 2=mid, 3=high)
+        _EDU = {1: 1, 2: 1, 3: 2, 4: 2, 5: 3, 6: 3}
+        edu_r = np.clip(_col("education", 3).astype(int), 1, 6)
+        self._edu = np.array([_EDU.get(int(e), 2) for e in edu_r], dtype=np.int8)
+
+        # age: continuous years → 4-band
+        age_yr = _col("age", 40.0)
+        self._age = np.where(age_yr < 30, 1,
+                    np.where(age_yr < 50, 2,
+                    np.where(age_yr < 70, 3, 4))).astype(np.int8)
+
+        # dw_size: 1–5 bands → 3-band
+        _SZ = {1: 1, 2: 1, 3: 2, 4: 3, 5: 3}
+        sz_r = np.clip(_col("dw_size", 3).astype(int), 1, 5)
+        self._dw_size = np.array([_SZ.get(int(s), 2) for s in sz_r], dtype=np.int8)
+
+        # dw_age: 1–6 bands → 3-band
+        _DA = {1: 1, 2: 1, 3: 2, 4: 2, 5: 3, 6: 3}
+        da_r = np.clip(_col("dw_age", 3).astype(int), 1, 6)
+        self._dw_age = np.array([_DA.get(int(d), 2) for d in da_r], dtype=np.int8)
+
+        # energy_label: 1–7 (7=dk) → 1–5; dk rows resampled from known
+        elab_r = np.clip(_col("energy_label", 3).astype(int), 1, 7)
+        elab = np.clip(elab_r, 1, 5).astype(np.int8)
+        dk = elab_r == 7
+        if dk.any():
+            known = elab[~dk]
+            elab[dk] = rng.choice(known if len(known) > 0 else np.array([3], dtype=np.int8),
+                                  size=int(dk.sum()))
+        self._dw_elab = elab
+
+        # --- Fixed defaults for variables absent from survey ---
+        self._ene_pat = np.ones((N, 3),    dtype=np.float64)
+        self._erI     = np.full((N, 3), -0.02, dtype=np.float64)
+
+        # --- Simulation state (zeros / False at start) ---
+        self._aware  = np.zeros(N, dtype=np.float64)
+        self._k      = np.zeros(N, dtype=np.float64)
+        self._U1     = np.zeros(N, dtype=np.float64)
+
+        self._guilt  = np.zeros(N,      dtype=bool)
+        self._m_st   = np.zeros((N, 3), dtype=bool)
+        self._cI_st  = np.zeros((N, 3), dtype=bool)
+        self._cC_st  = np.zeros((N, 3), dtype=bool)
+        self._cS_st  = np.zeros((N, 3), dtype=bool)
+
+        self._act1      = np.zeros(N, dtype=bool)
+        self._invest1   = np.zeros(N, dtype=bool)
+        self._act1_year = np.zeros(N, dtype=np.int32)
+        self._insulated = np.zeros(N, dtype=bool)
+
+        self._save_a0 = np.zeros(N, dtype=np.float64)
+        self._invs_a0 = np.zeros(N, dtype=np.float64)
+
     def _place_on_grid(self) -> None:
         """Draw grid positions; scale preserves ~0.1 agents/cell density."""
         scale = math.sqrt(self.n_households / N_HOUSEHOLDS[self.case_study])
@@ -370,23 +481,68 @@ class BENCHv4:
 
     def _build_neighbor_index(self) -> None:
         """Precompute _nbr_idx[i] = array of agent indices on the 8 adjacent patches."""
-        grid_dict: dict[tuple[int, int], list[int]] = {}
-        for i in range(self.n_households):
-            key = (int(self._grid_x[i]), int(self._grid_y[i]))
-            if key not in grid_dict:
-                grid_dict[key] = []
-            grid_dict[key].append(i)
+        n    = self.n_households
+        half = int(self._grid_max)
+        W    = 2 * half + 1
 
-        self._nbr_idx: list[np.ndarray] = []
-        for i in range(self.n_households):
-            gx, gy = int(self._grid_x[i]), int(self._grid_y[i])
-            nbrs: list[int] = []
-            for dx in (-1, 0, 1):
-                for dy in (-1, 0, 1):
-                    if dx == 0 and dy == 0:
-                        continue
-                    nbrs.extend(grid_dict.get((gx + dx, gy + dy), []))
-            self._nbr_idx.append(np.array(nbrs, dtype=np.int32))
+        # Shift to [0, W-1] coordinates so positions map to a linear patch id
+        gx  = self._grid_x + half   # int32, shape (n,)
+        gy  = self._grid_y + half
+        pid = gx * np.int32(W) + gy  # linear patch id, shape (n,)
+
+        # Sort agents by patch — enables a single bulk binary-search call
+        order = np.argsort(pid, kind='stable')
+        spid  = pid[order]
+
+        # Compute all 8 neighbour patch ids for every agent simultaneously
+        DX = np.array([-1,-1,-1, 0, 0, 1, 1, 1], dtype=np.int32)
+        DY = np.array([-1, 0, 1,-1, 1,-1, 0, 1], dtype=np.int32)
+        nx    = gx[:, None] + DX         # (n, 8)
+        ny    = gy[:, None] + DY
+        valid = (nx >= 0) & (nx < W) & (ny >= 0) & (ny < W)
+        npid  = np.where(valid, nx * W + ny, -1).astype(np.int32)  # (n, 8)
+
+        # Flatten to (source-agent, patch-id) pairs; discard out-of-bounds entries
+        src  = np.repeat(np.arange(n, dtype=np.int32), 8)
+        pids = npid.ravel()
+        keep = pids >= 0
+        src, pids = src[keep], pids[keep]
+
+        # Single bulk searchsorted: locate every queried patch in the sorted list
+        lo = np.searchsorted(spid, pids, side='left')
+        hi = np.searchsorted(spid, pids, side='right')
+
+        # Drop (agent, patch) pairs where the patch has no residents
+        has = lo < hi
+        src, lo, hi = src[has], lo[has], hi[has]
+        cnts = hi - lo  # agents per non-empty lookup
+
+        total = int(cnts.sum())
+        if total == 0:
+            self._nbr_idx = [np.empty(0, dtype=np.int32)] * n
+            return
+
+        # Expand ranges [lo[k], hi[k]) into a flat index array — fully vectorised
+        # cum[k] = start position in the output for range k
+        cum      = np.r_[np.int64(0), np.cumsum(cnts.astype(np.int64))]
+        within   = np.arange(total, dtype=np.int64) - np.repeat(cum[:-1], cnts)
+        nbr_flat = order[np.repeat(lo, cnts) + within].astype(np.int32)
+        src_flat = np.repeat(src, cnts)
+
+        # Sort by source agent and split into per-agent arrays
+        idx        = np.argsort(src_flat, kind='stable')
+        src_sorted = src_flat[idx]
+        nbr_sorted = nbr_flat[idx]
+
+        unique_src, starts = np.unique(src_sorted, return_index=True)
+        ends = np.empty_like(starts)
+        ends[:-1] = starts[1:]
+        ends[-1]  = total
+
+        nbr_idx: list[np.ndarray] = [np.empty(0, dtype=np.int32)] * n
+        for k in range(len(unique_src)):
+            nbr_idx[unique_src[k]] = nbr_sorted[starts[k]:ends[k]]
+        self._nbr_idx = nbr_idx
 
     # ------------------------------------------------------------------
     # go() sub-routines

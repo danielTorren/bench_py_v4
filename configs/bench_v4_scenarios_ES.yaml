@@ -10,41 +10,6 @@
 #   run_label   : prefix used for the output folder name
 #   description : free-text note (not used by the model)
 
-# -----------------------------------------------------------------------
-# Netherlands — Overijssel
-# -----------------------------------------------------------------------
-
-- case_study: NL
-  learning: No learning
-  runs: 64
-  memory: true
-  n_households: 10000
-  run_label: NL_NoLearning
-  description: Netherlands baseline — no social learning dynamics
-
-- case_study: NL
-  learning: Slow dynamics
-  runs: 64
-  memory: true
-  n_households: 10000
-  run_label: NL_SlowDynamics
-  description: Netherlands — slow neighbourhood social dynamics (>4 neighbours required)
-
-- case_study: NL
-  learning: Fast dynamics
-  runs: 64
-  memory: true
-  n_households: 10000
-  run_label: NL_FastDynamics
-  description: Netherlands — fast neighbourhood social dynamics (no threshold)
-
-- case_study: NL
-  learning: Informative
-  runs: 64
-  memory: true
-  n_households: 10000
-  run_label: NL_Informative
-  description: Netherlands — informative diffusion (all households gain knowledge each year)
 
 # -----------------------------------------------------------------------
 # Spain — Navarre

@@ -49,3 +49,6 @@ debug.csv
 
 # === Slurm logs ===
 *.log
+
+# === Real survey data (sensitive, never commit) ===
+survey_population/
