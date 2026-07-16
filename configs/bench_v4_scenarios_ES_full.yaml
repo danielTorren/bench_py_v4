@@ -1,0 +1,52 @@
+# BENCH v4 scenarios
+# Matches the paper: Niamir et al. (2024), Energy Research & Social Science 110
+#
+# Each entry is one configuration run.
+# Fields:
+#   case_study  : "NL" (Netherlands-Overijssel) or "ES" (Spain-Navarre)
+#   learning    : "No learning" | "Slow dynamics" | "Fast dynamics" | "Informative"
+#   runs        : number of Monte Carlo seed runs
+#   memory      : true = apply pre-2016 renovation recall (default: true)
+#   run_label   : prefix used for the output folder name
+#   description : free-text note (not used by the model)
+
+
+# -----------------------------------------------------------------------
+# Spain — Navarre
+# -----------------------------------------------------------------------
+
+- case_study: ES
+  learning: No learning
+  runs: 64
+  memory: true
+  n_households: 637486
+  run_label: ES_NoLearning
+  description: Spain baseline — no social learning dynamics
+  population: copula
+
+- case_study: ES
+  learning: Slow dynamics
+  runs: 64
+  memory: true
+  n_households: 637486
+  run_label: ES_SlowDynamics
+  description: Spain — slow neighbourhood social dynamics
+  population: copula
+
+- case_study: ES
+  learning: Fast dynamics
+  runs: 64
+  memory: true
+  n_households: 637486
+  run_label: ES_FastDynamics
+  description: Spain — fast neighbourhood social dynamics
+  population: copula
+
+- case_study: ES
+  learning: Informative
+  runs: 64
+  memory: true
+  n_households: 637486
+  run_label: ES_Informative
+  description: Spain — informative diffusion
+  population: copula
