@@ -21,7 +21,7 @@
 #SBATCH --partition=generic
 
 # ---- User configuration (edit if needed) ------------------------------------
-PROJECT_DIR="$HOME/BENCH_py_v.4"
+PROJECT_DIR="$HOME/bench_py_v4"
 VENV_DIR="$HOME/bench_v4_venv"
 CONFIG="configs/bench_v4_scenarios_ES_full.yaml"
 WORKERS=$SLURM_CPUS_PER_TASK
