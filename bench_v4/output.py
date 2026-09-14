@@ -38,6 +38,16 @@ def _save_annual_results(model, run_dir: str) -> None:
             "renov_cum_pct_dwage1", "renov_cum_pct_dwage2", "renov_cum_pct_dwage3",
             "renov_pct_grp1", "renov_pct_grp2", "renov_pct_grp3",
             "renov_pct_grp4", "renov_pct_grp5",
+            # Raw counts. Needed to aggregate into the paper's 5-year windows
+            # with a correct denominator: cohort sizes change every year once
+            # _update_dwelling starts redrawing dw_age in 2025, so summing the
+            # percentage columns above is not equivalent.
+            "n_renov_dwage1", "n_renov_dwage2", "n_renov_dwage3",
+            "n_total_dwage1", "n_total_dwage2", "n_total_dwage3",
+            "n_renov_grp1", "n_renov_grp2", "n_renov_grp3",
+            "n_renov_grp4", "n_renov_grp5",
+            "n_total_grp1", "n_total_grp2", "n_total_grp3",
+            "n_total_grp4", "n_total_grp5",
             "total_gas_saved_kwh", "total_energy_conservation_kwh",
             "total_energy_switching_kwh",
             "total_investment_eur", "total_invest_conservation_eur",
@@ -61,6 +71,10 @@ def _save_annual_results(model, run_dir: str) -> None:
                 round(cum[1], 4), round(cum[2], 4), round(cum[3], 4),
                 round(_pct_by_group(s, 1), 4), round(_pct_by_group(s, 2), 4), round(_pct_by_group(s, 3), 4),
                 round(_pct_by_group(s, 4), 4), round(_pct_by_group(s, 5), 4),
+                *[s.renov_by_dwage.get(c, 0) for c in (1, 2, 3)],
+                *[s.total_by_dwage.get(c, 0) for c in (1, 2, 3)],
+                *[s.renov_by_group.get(g, 0) for g in (1, 2, 3, 4, 5)],
+                *[s.total_by_group.get(g, 0) for g in (1, 2, 3, 4, 5)],
                 round(s.total_gas_saved, 2),
                 round(s.total_energy_conservation, 2),
                 round(s.total_energy_switching, 2),

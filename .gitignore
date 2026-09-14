@@ -9,7 +9,7 @@ output/
 netlogo/
 version_2/
 sensitivty/results/
-
+bench_4_paper/
 # Virtual environments
 .venv
 .bench_v4_venv

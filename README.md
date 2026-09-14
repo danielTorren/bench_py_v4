@@ -65,6 +65,7 @@ bench_v4/
   params.py        All empirical parameters and initialization distributions
   household.py     Household agent class (mirrors NetLogo turtle-own variables)
   model.py         BENCHv4 simulation engine (go-procedure logic)
+  aggregate.py     5-year window aggregation, matching the paper's reported rates
   output.py        Per-run CSV / JSON / TXT saving
   plotting.py      Single-scenario and multi-scenario plots (mean +/- 95% CI)
   __init__.py
@@ -110,6 +111,14 @@ The simulation engine. `BENCHv4.run()` calls `setup()` then iterates `go()` from
 13. `_update_memory` — increment renovation cooldown counter and reset when expired
 
 At the end of each tick, `_collect_stats()` assembles an `AnnualStats` dataclass record that is appended to `model.history`.
+
+### `bench_v4/aggregate.py`
+
+The single definition of the paper's reporting window. `multi_year_rate()` turns an annual
+series of renovation counts plus cohort sizes into the "% of cohort renovating over a 5-year
+period" figure that Niamir et al. (2024) plot in Figs. 5 to 7. `multi_year_rate_from_df()` and
+`stack_runs()` apply it to `annual_results.csv` DataFrames, with a fallback (and a warning) for
+CSVs written before the raw count columns existed. See "Reporting: annual vs 5-year rates".
 
 ### `bench_v4/output.py`
 
@@ -205,8 +214,10 @@ output/
     plots/
       renovation_rate_overall.png
       renovation_by_vintage.png
+      renovation_by_vintage_5yr.png        5-year windows, as reported in the paper
       renovation_by_vintage_cumulative.png
       renovation_by_income.png
+      renovation_by_income_5yr.png         5-year windows, as reported in the paper
       behaviour_count_by_type.png
       investment_by_type.png
       energy_saved_by_type.png
@@ -230,14 +241,14 @@ output/
           summary.txt
         ...
       plots/
-        (10 plots, same as above)
+        (12 plots, same as above)
     NL_Slow_dynamics/
       ...
     ES_Informative/
       ...
     multi_scenario_plots/
       multi_renovation_by_vintage.png          Vintage renovation grid (rows=learning, cols=case)
-      multi_renovation_by_income_histogram.png Income group bars at 5-year intervals
+      multi_renovation_by_income_histogram.png Income group bars, 5-year windows
 ```
 
 All single-scenario plots show the **mean line** across seed runs with a **shaded 95% confidence interval** band.
@@ -264,6 +275,10 @@ All single-scenario plots show the **mean line** across seed runs with a **shade
 | `renov_pct_grp3` | % renovating — income group 3 |
 | `renov_pct_grp4` | % renovating — income group 4 |
 | `renov_pct_grp5` | % renovating — income group 5 (highest) |
+| `n_renov_dwage1..3` | Renovation **count** per dwelling-vintage cohort |
+| `n_total_dwage1..3` | Cohort **size** per dwelling-vintage cohort |
+| `n_renov_grp1..5` | Renovation **count** per income group |
+| `n_total_grp1..5` | Group **size** per income group |
 | `total_gas_saved_kwh` | Annual gas savings from renovation (kWh) |
 | `total_energy_conservation_kwh` | Annual energy savings from conservation (kWh) |
 | `total_energy_switching_kwh` | Annual energy savings from fuel switching (kWh) |
@@ -277,6 +292,81 @@ All single-scenario plots show the **mean line** across seed runs with a **shade
 | `high_m1_pct` | % households with high motivation for renovation |
 | `high_m2_pct` | % households with high motivation for conservation |
 | `high_m3_pct` | % households with high motivation for switching |
+
+---
+
+## Reporting: annual vs 5-year rates
+
+The paper (Niamir et al. 2024) reports renovation rates in Figs. 5, 6 and 7 as
+
+> "the percentage of households renovation within specific age cohorts (<10, 11-35, >35),
+> relative to the total number of households in each cohort, **observed over a 5-year period**"
+
+so the value plotted at year Y is
+
+```
+100 * (renovations during [Y-4, Y]) / (households in that cohort)
+```
+
+not the single-year rate at Y. The distinction matters here: the renovation cooldown
+(15 / 7 / 2 years by dwelling vintage) synchronises households into cohort waves, so the
+**annual** series oscillates with a period of 2 to 7 years while the **5-year** aggregate is
+smooth and comparable with the published figures.
+
+`bench_v4/aggregate.py` holds the single definition. Both plotting and the programmatic API
+use it:
+
+```python
+from bench_v4 import BENCHv4
+
+m = BENCHv4(case_study="NL", learning="Informative", seed=1)
+m.run()
+
+end_years, rates = m.renovation_rate_5yr_by_vintage()
+# end_years -> [2020, 2025, 2030, 2035, 2040, 2045, 2050]
+# rates     -> {1: array([...]), 2: ..., 3: ...}   % of cohort renovating per 5 yr
+
+end_years, rates = m.renovation_rate_5yr_by_income()
+```
+
+Both accept the `aggregate.multi_year_rate` keyword arguments:
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `end_years` | `[2020, 2025, ..., 2050]` | Window end years to report |
+| `window` | `5` | Window length in years |
+| `denominator` | `"mean"` | `"mean"` = mean cohort size over the window, `"last"` = cohort size in the end year. Cohort size is not constant, because `_update_dwelling` redraws `dw_age` every year from 2025 |
+| `min_year` | `None` | Drop years before this from every window. `None` keeps every model year, which is what reproduces the paper |
+
+### Why the paper's BENCH figures start at 2020
+
+The run is 2016-2050 = 35 years = **exactly 7 windows of 5**, and Figs. 5 to 7 show exactly 7
+points. The windows tile the run with no gap or overlap, each labelled by its **end** year:
+
+| label | covers | label | covers |
+|---|---|---|---|
+| 2020 | 2016-2020 | 2040 | 2036-2040 |
+| 2025 | 2021-2025 | 2045 | 2041-2045 |
+| 2030 | 2026-2030 | 2050 | 2046-2050 |
+| 2035 | 2031-2035 | | |
+
+So 2016-2019 are not missing from the paper's charts, they are inside the first window. 2016
+therefore belongs in the aggregation, and `min_year` defaults to `None`.
+
+Setting `min_year=2017` to trim the 2016 initialisation tick is available but changes results
+far more than "one year in five" suggests. On tick 1 every household already past the
+behavioural gates renovates at once, then serves its cooldown (15 / 7 / 2 years by vintage).
+For the two long-cooldown cohorts there are *no* further renovations before 2021, so 2016 is
+100 % of their first window and trimming it sends them to zero. See `MODEL_AUDIT.md`
+section 3.3 item 3.
+
+Annual plots are still produced alongside the 5-year ones; use the annual series to diagnose
+model dynamics and the 5-year series to compare against the paper.
+
+CSVs written before the `n_renov_*` / `n_total_*` count columns existed still work: the
+aggregation falls back to summing the annual percentage columns and emits a `RuntimeWarning`.
+That fallback is exact only while cohort size is constant, so it drifts by up to ~1 percentage
+point from 2025 onwards. Re-run the model to regenerate the CSVs for exact values.
 
 ---
 

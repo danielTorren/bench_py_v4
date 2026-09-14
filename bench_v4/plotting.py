@@ -19,6 +19,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 
+from .aggregate import (REPORT_MIN_YEAR, REPORT_YEARS, WINDOW,
+                        stack_runs, window_bounds)
+
 
 # ---------------------------------------------------------------------------
 # Visual config
@@ -31,6 +34,23 @@ VINTAGE_MARKERS = {1: "o", 2: "s", 3: "^"}
 GROUP_LABELS = {1: "G1 (lowest)", 2: "G2", 3: "G3", 4: "G4", 5: "G5+ (highest)"}
 GROUP_COLORS  = {1: "#2E86AB", 2: "#F18F01", 3: "#A23B72", 4: "#27AE60", 5: "#8E44AD"}
 GROUP_MARKERS = {1: "o", 2: "s", 3: "^", 4: "D", 5: "P"}
+
+# Column triples (renovation count, cohort size, legacy percentage fallback)
+# used by the paper-style 5-year aggregation.
+VINTAGE_AGG_COLS = {
+    cat: (f"n_renov_dwage{cat}", f"n_total_dwage{cat}", f"renov_pct_dwage{cat}")
+    for cat in (1, 2, 3)
+}
+GROUP_AGG_COLS = {
+    g: (f"n_renov_grp{g}", f"n_total_grp{g}", f"renov_pct_grp{g}")
+    for g in range(1, 6)
+}
+
+# First year admitted to a reporting window; see aggregate.REPORT_MIN_YEAR.
+# None (the default) reproduces the paper: 7 windows of 5 years tiling 2016-2050,
+# each labelled by its end year, which is why the chart starts at 2020.
+# Any window left short by this setting is shaded grey on the line plots.
+AGG_MIN_YEAR: int | None = REPORT_MIN_YEAR
 
 
 # ---------------------------------------------------------------------------
@@ -63,8 +83,10 @@ def plot_all(config_dir: str) -> List[str]:
 
     saved += _plot_renovation_overall(dfs, years, n, plots_dir)
     saved += _plot_renovation_by_vintage(dfs, years, n, plots_dir)
+    saved += _plot_renovation_5yr_by_vintage(dfs, years, n, plots_dir)
     saved += _plot_renovation_cumulative_by_vintage(dfs, years, n, plots_dir)
     saved += _plot_renovation_by_income(dfs, years, n, plots_dir)
+    saved += _plot_renovation_5yr_by_income(dfs, years, n, plots_dir)
     saved += _plot_behaviour_count_by_type(dfs, years, n, plots_dir)
     saved += _plot_investment_by_type(dfs, years, n, plots_dir)
     saved += _plot_energy_saved(dfs, years, n, plots_dir)
@@ -186,6 +208,68 @@ def _plot_renovation_cumulative_by_vintage(dfs, years, n, plots_dir):
               "Year", "Cumulative % Renovating", n)
     plt.tight_layout()
     return [_fig_save(plots_dir, "renovation_by_vintage_cumulative.png")]
+
+
+def _agg_5yr(dfs, agg_cols, key):
+    """Stack the paper-style 5-year rate for one cohort across runs."""
+    renov_col, total_col, pct_col = agg_cols[key]
+    return stack_runs(dfs, renov_col, total_col, pct_col=pct_col,
+                      end_years=REPORT_YEARS, window=WINDOW,
+                      min_year=AGG_MIN_YEAR)
+
+
+def _agg_note(ax, end_years, full):
+    """Mark reporting windows that were clipped short."""
+    for x, ok in zip(end_years, full):
+        if not ok:
+            ax.axvspan(x - 0.4, x + 0.4, color="#cccccc", alpha=0.25, zorder=0)
+
+
+def _plot_renovation_5yr_by_vintage(dfs, years, n, plots_dir):
+    """Fig. 5 analogue: renovations per 5-year window / mean cohort size."""
+    fig, ax = plt.subplots(figsize=(11, 6))
+    end_years, full = [], []
+    for cat in (1, 2, 3):
+        end_years, mat, full = _agg_5yr(dfs, VINTAGE_AGG_COLS, cat)
+        mean, lo, hi = _ci(mat)
+        color = VINTAGE_COLORS[cat]
+        ax.plot(end_years, mean, color=color, linewidth=2,
+                marker=VINTAGE_MARKERS[cat], markersize=6,
+                label=VINTAGE_LABELS[cat])
+        if n > 1:
+            _add_ci_band(ax, end_years, lo, hi, color)
+
+    _agg_note(ax, end_years, full)
+    _style_ax(ax, f"Renovation Rate by Dwelling Vintage ({WINDOW}-year windows)",
+              "Window end year",
+              f"% of cohort renovating per {WINDOW} yr", n)
+    ax.set_xticks(end_years)
+    ax.xaxis.set_major_locator(mticker.FixedLocator(end_years))
+    plt.tight_layout()
+    return [_fig_save(plots_dir, "renovation_by_vintage_5yr.png")]
+
+
+def _plot_renovation_5yr_by_income(dfs, years, n, plots_dir):
+    """Fig. 7 analogue: renovations per 5-year window / mean income-group size."""
+    fig, ax = plt.subplots(figsize=(11, 6))
+    end_years, full = [], []
+    for g in range(1, 6):
+        end_years, mat, full = _agg_5yr(dfs, GROUP_AGG_COLS, g)
+        mean, lo, hi = _ci(mat)
+        color = GROUP_COLORS[g]
+        ax.plot(end_years, mean, color=color, linewidth=2,
+                marker=GROUP_MARKERS[g], markersize=6, label=GROUP_LABELS[g])
+        if n > 1:
+            _add_ci_band(ax, end_years, lo, hi, color)
+
+    _agg_note(ax, end_years, full)
+    _style_ax(ax, f"Renovation Rate by Income Group ({WINDOW}-year windows)",
+              "Window end year",
+              f"% of group renovating per {WINDOW} yr", n)
+    ax.set_xticks(end_years)
+    ax.xaxis.set_major_locator(mticker.FixedLocator(end_years))
+    plt.tight_layout()
+    return [_fig_save(plots_dir, "renovation_by_income_5yr.png")]
 
 
 def _plot_renovation_by_income(dfs, years, n, plots_dir):
@@ -365,7 +449,9 @@ _LEARNING_LABELS = {
     "Fast dynamics": "Fast Dynamics",
     "Informative":   "Informative",
 }
-_SNAPSHOT_YEARS = [2020, 2025, 2030, 2035, 2040, 2045, 2050]
+# End years of the paper's reporting windows. Single source of truth lives in
+# bench_v4.aggregate so the plots and the model helpers cannot drift apart.
+_SNAPSHOT_YEARS = REPORT_YEARS
 
 
 def _discover_scenarios(parent_dir: str) -> dict:
@@ -533,11 +619,6 @@ def _plot_ms_income_histogram(data, rows, cols, plots_dir):
     cmap   = plt.get_cmap("Blues")
     colors = [cmap(0.30 + 0.65 * i / max(n_snaps - 1, 1)) for i in range(n_snaps)]
 
-    income_cols = {
-        1: "renov_pct_grp1", 2: "renov_pct_grp2", 3: "renov_pct_grp3",
-        4: "renov_pct_grp4", 5: "renov_pct_grp5",
-    }
-
     # x-tick centre for each income group
     group_centres = [g * group_gap + (n_snaps - 1) * bar_w / 2
                      for g in range(n_groups)]
@@ -561,26 +642,26 @@ def _plot_ms_income_histogram(data, rows, cols, plots_dir):
             dfs = data[key]
             n   = len(dfs)
 
-            for snap_idx, year in enumerate(_SNAPSHOT_YEARS):
+            # One 5-year window rate per income group, per window end year.
+            # rates[g] is (n_runs, n_windows).
+            rates = {}
+            end_years = _SNAPSHOT_YEARS
+            for g in range(1, n_groups + 1):
+                end_years, mat, _ = _agg_5yr(dfs, GROUP_AGG_COLS, g)
+                rates[g] = mat
+
+            for snap_idx, year in enumerate(end_years):
                 x_pos  = [g * group_gap + snap_idx * bar_w for g in range(n_groups)]
                 y_vals = []
                 y_errs = []
 
-                for col in income_cols.values():
-                    vals = []
-                    for df in dfs:
-                        row = df[df["year"] == year]
-                        if not row.empty and col in row.columns:
-                            vals.append(float(row[col].iloc[0]))
-                    if vals:
-                        y_vals.append(np.mean(vals))
-                        y_errs.append(
-                            1.96 * np.std(vals, ddof=1) / np.sqrt(len(vals))
-                            if len(vals) > 1 else 0.0
-                        )
-                    else:
-                        y_vals.append(0.0)
-                        y_errs.append(0.0)
+                for g in range(1, n_groups + 1):
+                    vals = rates[g][:, snap_idx]
+                    y_vals.append(float(np.mean(vals)))
+                    y_errs.append(
+                        1.96 * float(np.std(vals, ddof=1)) / np.sqrt(len(vals))
+                        if len(vals) > 1 else 0.0
+                    )
 
                 ax.bar(
                     x_pos, y_vals,
@@ -588,7 +669,7 @@ def _plot_ms_income_histogram(data, rows, cols, plots_dir):
                     color=colors[snap_idx],
                     yerr=y_errs if n > 1 else None,
                     error_kw={"elinewidth": 0.8, "capsize": 1.5, "alpha": 0.6},
-                    label=str(year),
+                    label="{}-{}".format(*window_bounds(year, WINDOW)),
                 )
 
             ax.set_xticks(group_centres)
@@ -598,17 +679,18 @@ def _plot_ms_income_histogram(data, rows, cols, plots_dir):
                         ha="right", va="top", fontsize=7, color="#666666")
 
     _ms_border_labels(axes, rows, cols,
-                      ylabel_prefix="% Renovating", xlabel="Income Group")
+                      ylabel_prefix=f"% of group renovating\nper {WINDOW} yr",
+                      xlabel="Income Group")
 
     handles, labels = axes[0][0].get_legend_handles_labels()
     if handles:
         fig.legend(handles, labels, loc="lower center", ncol=n_snaps,
                    frameon=True, facecolor="white", edgecolor="#d0d0d0",
                    fontsize=9, bbox_to_anchor=(0.5, 0.0),
-                   title="5-year snapshot")
+                   title=f"{WINDOW}-year reporting window")
 
     fig.suptitle(
-        "Renovation Rate by Income Group — 5-year Snapshots  (mean +/- 95% CI)",
+        f"Renovation Rate by Income Group, {WINDOW}-year windows  (mean +/- 95% CI)",
         fontsize=13, fontweight="bold",
     )
     plt.tight_layout(rect=[0, 0.07, 1, 0.97])
