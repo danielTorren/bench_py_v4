@@ -800,6 +800,58 @@ class BENCHv4:
                 result[g].append(100.0 * ren / tot if tot > 0 else 0.0)
         return result
 
+    # --- Paper-style multi-year aggregation (Niamir et al. 2024, Figs. 5-7) ---
+
+    def renovation_rate_5yr_by_vintage(self, **kwargs):
+        """
+        Renovation rate per vintage cohort aggregated over 5-year windows.
+
+        Returns ``(end_years, {1: rates, 2: rates, 3: rates})``.  See
+        ``bench_v4.aggregate`` for the definition and the keyword arguments
+        (``end_years``, ``window``, ``denominator``, ``min_year``).
+
+        ``min_year`` defaults to ``aggregate.REPORT_MIN_YEAR`` (2017), which
+        drops the 2016 initialisation tick; pass ``min_year=None`` to include it.
+        """
+        from .aggregate import REPORT_MIN_YEAR, multi_year_rate
+
+        kwargs.setdefault("min_year", REPORT_MIN_YEAR)
+        years = self.years()
+        out = {}
+        end_years: list[int] = []
+        for cat in (1, 2, 3):
+            end_years, rates, _ = multi_year_rate(
+                years,
+                [s.renov_by_dwage.get(cat, 0) for s in self.history],
+                [s.total_by_dwage.get(cat, 0) for s in self.history],
+                **kwargs,
+            )
+            out[cat] = rates
+        return end_years, out
+
+    def renovation_rate_5yr_by_income(self, **kwargs):
+        """
+        Renovation rate per income group aggregated over 5-year windows.
+
+        ``min_year`` defaults to ``aggregate.REPORT_MIN_YEAR`` (2017), which
+        drops the 2016 initialisation tick; pass ``min_year=None`` to include it.
+        """
+        from .aggregate import REPORT_MIN_YEAR, multi_year_rate
+
+        kwargs.setdefault("min_year", REPORT_MIN_YEAR)
+        years = self.years()
+        out = {}
+        end_years: list[int] = []
+        for g in range(1, 6):
+            end_years, rates, _ = multi_year_rate(
+                years,
+                [s.renov_by_group.get(g, 0) for s in self.history],
+                [s.total_by_group.get(g, 0) for s in self.history],
+                **kwargs,
+            )
+            out[g] = rates
+        return end_years, out
+
     def years(self) -> list[int]:
         return [s.year for s in self.history]
 

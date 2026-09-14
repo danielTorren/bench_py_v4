@@ -8,7 +8,12 @@ for every combination of case study (NL / ES) and learning mode (4 options).
 Each scenario gets S independent seeds; results are aggregated to
 mean ± 95% confidence interval of the mean per year.
 
-Output: demo_scenarios.json  — copy to bench-models-archive/docs/
+Output: ../BENCH-x-ABM-model-store/docs/demo_scenarios.json
+
+That is the file docs/demo.html fetches at runtime (see demo.html, the
+`fetch('demo_scenarios.json')` call), so writing there updates the live demo
+directly with no copy step.  The path is resolved relative to THIS script, not
+to the working directory, so it works from anywhere.
 
 Usage
 -----
@@ -38,6 +43,15 @@ if _BENCH_PATH not in sys.path:
     sys.path.insert(0, _BENCH_PATH)
 
 # ---------------------------------------------------------------------------
+# Default output: the model-store repo's docs/ folder, which is what the live
+# demo page fetches.  Resolved against this file so the default holds wherever
+# the script is invoked from.
+# ---------------------------------------------------------------------------
+DEFAULT_OUTPUT = (
+    Path(_BENCH_PATH).parent / "BENCH-x-ABM-model-store" / "docs" / "demo_scenarios.json"
+)
+
+# ---------------------------------------------------------------------------
 # Scenario axes
 # ---------------------------------------------------------------------------
 CASES = ["NL", "ES"]
@@ -61,6 +75,15 @@ METRICS: dict[str, dict] = {
     "total_gas_saved_kwh": {"label": "Cumulative gas saved",      "unit": "kWh"},
     "avg_aware":           {"label": "Mean awareness score",      "unit": "(1–7)"},
     "high_m1_pct":         {"label": "High motivation to invest", "unit": "%"},
+}
+
+# Per-vintage renovation rate over 5-year windows, i.e. Fig. 5 of
+# Niamir et al. (2024).  Separate from METRICS above because these series are
+# indexed by `years_5yr` (7 window end-years), not by `years` (35 annual points).
+VINTAGE_SERIES: dict[str, dict] = {
+    "renov_5yr_dwage1": {"label": "<10 years",   "color": "#2E86AB"},
+    "renov_5yr_dwage2": {"label": "11-35 years", "color": "#F18F01"},
+    "renov_5yr_dwage3": {"label": ">35 years",   "color": "#A23B72"},
 }
 
 # ---------------------------------------------------------------------------
@@ -143,6 +166,13 @@ def _run_one(
             "total_gas_saved_kwh": round(s.total_gas_saved, 2),
             "avg_aware":          round(s.avg_aware, 4),
             "high_m1_pct":        round(s.high_m1_pct, 4),
+            # Raw per-vintage counts, needed to build the paper's Fig. 5 rate.
+            # They must come back per seed: the 5-year window has to be applied
+            # BEFORE collapsing across seeds, because a seed's annual values are
+            # strongly correlated (the cohort-wave effect), so a confidence
+            # interval cannot be reconstructed from per-year intervals later.
+            "rv": [s.renov_by_dwage.get(c, 0) for c in (1, 2, 3)],
+            "tv": [s.total_by_dwage.get(c, 0) for c in (1, 2, 3)],
         }
         for s in model.history
     ]
@@ -152,20 +182,50 @@ def _run_one(
 # Aggregation
 # ---------------------------------------------------------------------------
 
+def _mean_ci(mat: np.ndarray) -> dict:
+    """mean and 95% CI of the mean across rows (seeds), rounded for JSON."""
+    n    = mat.shape[0]
+    mean = np.mean(mat, axis=0)
+    ci   = 1.96 * np.std(mat, axis=0, ddof=1) / np.sqrt(n) if n > 1 else np.zeros_like(mean)
+    return {
+        "mean": [round(v, 4) for v in mean.tolist()],
+        "lo":   [round(v, 4) for v in (mean - ci).tolist()],
+        "hi":   [round(v, 4) for v in (mean + ci).tolist()],
+    }
+
+
 def _aggregate(all_runs: list[list[dict]]) -> dict:
-    """Reduce seed-runs to mean ± 95% CI of the mean per year × metric."""
+    """
+    Reduce seed-runs to mean ± 95% CI of the mean.
+
+    Annual metrics are collapsed year by year.  The per-vintage Fig. 5 rates are
+    windowed per seed FIRST (via bench_v4.aggregate, the same definition the
+    plots and BENCHv4.renovation_rate_5yr_* use), then collapsed, so their
+    intervals account for within-seed correlation across years.
+    """
+    from bench_v4.aggregate import multi_year_rate  # noqa: PLC0415
+
     years = [r["year"] for r in all_runs[0]]
-    n = len(all_runs)
     out: dict = {"years": years}
+
     for metric in METRICS:
-        mat  = np.array([[r[metric] for r in run] for run in all_runs])
-        mean = np.mean(mat, axis=0)
-        ci   = 1.96 * np.std(mat, axis=0, ddof=1) / np.sqrt(n)
-        out[metric] = {
-            "mean": [round(v, 4) for v in mean.tolist()],
-            "lo":   [round(v, 4) for v in (mean - ci).tolist()],
-            "hi":   [round(v, 4) for v in (mean + ci).tolist()],
-        }
+        out[metric] = _mean_ci(
+            np.array([[r[metric] for r in run] for run in all_runs])
+        )
+
+    end_years: list[int] = []
+    for ci_, cat in enumerate((1, 2, 3)):
+        per_seed = []
+        for run in all_runs:
+            end_years, rates, _ = multi_year_rate(
+                years,
+                [r["rv"][ci_] for r in run],
+                [r["tv"][ci_] for r in run],
+            )
+            per_seed.append(rates)
+        out[f"renov_5yr_dwage{cat}"] = _mean_ci(np.array(per_seed))
+
+    out["years_5yr"] = end_years
     return out
 
 
@@ -176,8 +236,8 @@ def _aggregate(all_runs: list[list[dict]]) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate BENCH v4 demo data")
     parser.add_argument(
-        "--output", default="demo_scenarios.json",
-        help="Output JSON path (default: demo_scenarios.json)",
+        "--output", default=str(DEFAULT_OUTPUT),
+        help=f"Output JSON path (default: {DEFAULT_OUTPUT})",
     )
     parser.add_argument(
         "--seeds", type=int, default=100,
@@ -196,6 +256,17 @@ def main() -> None:
         help="Agents per run; None uses survey default (~759 NL / 793 ES)",
     )
     args = parser.parse_args()
+
+    # Fail before the sweep, not after it.  mkdir(parents=True) below would
+    # otherwise happily invent a whole directory tree if the target repo is not
+    # checked out next to this one, and the ~3 min of compute would land there.
+    out_path = Path(args.output)
+    if not out_path.parent.is_dir():
+        parser.error(
+            f"output directory does not exist: {out_path.parent}\n"
+            f"        Expected the model-store repo alongside this one. Either clone it, "
+            f"or pass --output explicitly."
+        )
 
     # Build parameter value grid from CLI arg
     param_values = [round(v, 4) for v in np.linspace(1.0, 7.0, args.n_params).tolist()]
@@ -259,6 +330,7 @@ def main() -> None:
     # Aggregate and serialise
     # ------------------------------------------------------------------
     from bench_v4.params import N_HOUSEHOLDS as _SURVEY_N  # noqa: PLC0415
+    from bench_v4.aggregate import REPORT_YEARS, WINDOW     # noqa: PLC0415
 
     # Resolve actual household count used per case
     if args.n_households is not None:
@@ -278,12 +350,13 @@ def main() -> None:
                            for p, v in params.items()},
         "defaults":       DEFAULTS,
         "metrics":        METRICS,
+        "vintage_series": VINTAGE_SERIES,
+        "years_5yr":      list(REPORT_YEARS),
+        "window":         WINDOW,
         "scenarios":      {key: _aggregate(grouped[key])
                            for key in scenario_keys},
     }
 
-    out_path = Path(args.output)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(output, fh, separators=(",", ":"))
 
