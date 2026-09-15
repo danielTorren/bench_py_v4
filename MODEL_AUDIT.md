@@ -12,8 +12,9 @@ Audit date: 2026-09-14. Sources compared:
 
 1. **The Python is a faithful port.** `params.py` is an exact transcription of the NetLogo
    `setup` block (verified by script: all 14 groups, every range and break point). The tick
-   logic matches. The divergences found are small (1 to 4 % on cumulative renovations), with
-   **one exception**: `Slow dynamics` does no peer learning at all in Python.
+   logic matches. The divergences found are small (1 to 4 % on cumulative renovations). The
+   one that matters is qualitative rather than large: `Slow dynamics` reaches about one agent
+   per run with peer learning, making it effectively `No learning`.
 
 2. **The jaggedness is real model behaviour, not a port bug.** It comes from the renovation
    cooldown (15 / 7 / 2 years by dwelling vintage) synchronising households into cohort waves.
@@ -62,22 +63,37 @@ Audit date: 2026-09-14. Sources compared:
 
 ### 1.2 Divergences, ranked by impact
 
-#### #1. `Slow dynamics` has no peer learning in Python. (Large.)
+#### #1. `Slow dynamics` is effectively `No learning` in Python. (Qualitative.)
 
 NetLogo builds the social network with `create-links-to other turtles-on neighbors` and
 **never clears the links**, so `link-neighbors` is a cumulative directed network that grows
 every year. The gate `if count link-neighbors > 4` therefore opens progressively.
 
-Python re-derives neighbours from the static patch grid each tick. At 793 agents on an 89x89
-world the neighbour-count distribution is `[392, 257, 85, 23, 2]` for 0..4 neighbours:
-**the max is 4, so `len(nbrs) > SLOW_NEIGHBOR_MIN` is never true.** Result:
+Python re-derives neighbours from the static patch grid each tick, and that grid is nearly
+empty: 759 agents on an 89x89 world is 0.096 agents per patch, so an agent's 8-patch
+neighbourhood holds **0.77 agents on average**. Measured over 200 seeds, the number of agents
+that clear `len(nbrs) > SLOW_NEIGHBOR_MIN` is:
 
 ```
-NL  No learning      24.91 %        ES  No learning       2.98 %
-NL  Slow dynamics    24.91 %        ES  Slow dynamics     2.98 %
+NL  0.89 agents per run (of 759)   at least one in  96/200 runs   max seen 8
+ES  1.04 agents per run (of 793)   at least one in 101/200 runs   max seen 7
 ```
-(cumulative renovations per household, mean of 20 seeds). Identical to the digit.
-The paper's SD scenario, its behavioural baseline, is currently `No learning` in the Python.
+
+So peer learning reaches roughly **one agent in 776 per run**. Net effect on cumulative
+renovations, 200 seeds:
+
+```
+NL  No learning 197.7   Slow dynamics 198.1   +0.24 %   13/200 seeds differ
+ES  No learning  25.7   Slow dynamics  25.8   +0.04 %    1/200 seeds differ
+```
+
+The paper's SD scenario, its behavioural baseline, is therefore *effectively* `No learning` in
+the Python: not bit-identical, but within a quarter of a percent.
+
+(Correction, 2026-09-15: an earlier draft of this section said the gate "is never true" and
+that the two modes were "identical to the digit". That was inferred from a single seed whose
+maximum neighbour count happened to be exactly 4. The gate does open, for about one agent per
+run. The conclusion is unchanged; the absolute claim was wrong.)
 
 Fix: keep a persistent cumulative link set (`self._links: list[set[int]]`), add
 `turtles-on neighbors` to it each tick for acting agents, and gate on its size. Keep the
