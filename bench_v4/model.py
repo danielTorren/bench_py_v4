@@ -497,16 +497,18 @@ class BENCHv4:
         # Compute all 8 neighbour patch ids for every agent simultaneously
         DX = np.array([-1,-1,-1, 0, 0, 1, 1, 1], dtype=np.int32)
         DY = np.array([-1, 0, 1,-1, 1,-1, 0, 1], dtype=np.int32)
-        nx    = gx[:, None] + DX         # (n, 8)
-        ny    = gy[:, None] + DY
-        valid = (nx >= 0) & (nx < W) & (ny >= 0) & (ny < W)
-        npid  = np.where(valid, nx * W + ny, -1).astype(np.int32)  # (n, 8)
+        # The NetLogo world wraps on both axes (view has wrappingAllowedX/Y="true"),
+        # so `neighbors` always reports 8 patches, including at the edges.  Take the
+        # coordinates modulo W to match; clipping instead would give perimeter
+        # agents artificially few neighbours.
+        nx    = (gx[:, None] + DX) % W   # (n, 8)
+        ny    = (gy[:, None] + DY) % W
+        npid  = (nx * W + ny).astype(np.int32)
 
-        # Flatten to (source-agent, patch-id) pairs; discard out-of-bounds entries
+        # Flatten to (source-agent, patch-id) pairs.  Wrapping means every id is
+        # in range, so there is nothing to discard here.
         src  = np.repeat(np.arange(n, dtype=np.int32), 8)
         pids = npid.ravel()
-        keep = pids >= 0
-        src, pids = src[keep], pids[keep]
 
         # Single bulk searchsorted: locate every queried patch in the sorted list
         lo = np.searchsorted(spid, pids, side='left')
