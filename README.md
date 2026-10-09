@@ -66,22 +66,6 @@ m.run()
 end_years, rates = m.renovation_rate_5yr_by_vintage()
 ```
 
-## Validation against NetLogo
-
-`validation/` runs the original NetLogo model headless (NetLogo 7.0.4) and compares it with the Python port.
-
-```bash
-uv run python validation/run_netlogo.py --runs 100     # 600 NetLogo runs
-uv run python validation/compare_netlogo.py            # writes validation/comparison.md
-```
-
-The NetLogo model file is expected at `netlogo/BENCH_ v04_ B-NLD.ESP.nlogox`. The two models use different random number generators, so single runs do not match. The comparison is between ensembles with the same seeds: for each scenario, metric and year, the difference of the means is divided by its standard error. A faithful port gives about 5 % of values above 1.96 by chance.
-
-One change is made to the NetLogo copy that is run: the `debug` procedure, which writes every agent to `debug.csv` on every tick, is replaced by `ask turtles [ ]`. This keeps the random number stream unchanged.
-
-**Year labels in BehaviorSpace output.** NetLogo's `go` increments `year` at the end of the tick, so in a BehaviorSpace table the row labelled `year = Y` holds the results of model year `Y - 1`. The first row (2016) is zero, and model year 2050 is never recorded. The Python output labels each year by the model year.
-
-`tests/` checks specific NetLogo behaviours (`uv run pytest`).
 
 ## Project structure
 
@@ -109,4 +93,3 @@ The port keeps these behaviours of the NetLogo code on purpose:
 - **Synchronised start.** Every eligible household renovates in 2016 and then waits for the same cooldown, which gives waves in the annual results.
 - **The utility never blocks a decision.** `U1 > 0` for all households that reach this step, so the utility coefficients have no effect on the results.
 - **Pre-2016 recall, ES income group 3.** The code gives 2.9 %, but a second condition overrides it to 1.7 %.
-- **NL income file.** The file has 175 rows (35 values, each repeated 5 times), but only rows 1-35 are read. Income does not affect any decision.
