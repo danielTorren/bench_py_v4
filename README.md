@@ -66,12 +66,6 @@ m.run()
 end_years, rates = m.renovation_rate_5yr_by_vintage()
 ```
 
-Compare with the values read from Fig. 5 of the paper:
-
-```bash
-uv run python compare_to_paper.py --seeds 100
-```
-
 ## Validation against NetLogo
 
 `validation/` runs the original NetLogo model headless (NetLogo 7.0.4) and compares it with the Python port.
@@ -85,7 +79,7 @@ The NetLogo model file is expected at `netlogo/BENCH_ v04_ B-NLD.ESP.nlogox`. Th
 
 One change is made to the NetLogo copy that is run: the `debug` procedure, which writes every agent to `debug.csv` on every tick, is replaced by `ask turtles [ ]`. This keeps the random number stream unchanged.
 
-**Year labels in BehaviorSpace output.** NetLogo's `go` increments `year` at the end of the tick, so in a BehaviorSpace table the row labelled `year = Y` holds the results of model year `Y - 1`. The first row (2016) is zero, and model year 2050 is never recorded. The Python output labels each year by the model year. `compare_to_paper.py --labels behaviorspace` applies the BehaviorSpace convention.
+**Year labels in BehaviorSpace output.** NetLogo's `go` increments `year` at the end of the tick, so in a BehaviorSpace table the row labelled `year = Y` holds the results of model year `Y - 1`. The first row (2016) is zero, and model year 2050 is never recorded. The Python output labels each year by the model year.
 
 `tests/` checks specific NetLogo behaviours (`uv run pytest`).
 
@@ -103,7 +97,6 @@ data/             EXIOMOD income growth factors (ES, NL)
 validation/       Headless NetLogo runner and ensemble comparison
 tests/            NetLogo parity tests
 main.py           Command-line entry point
-compare_to_paper.py
 ```
 
 ## Known issues in the original model

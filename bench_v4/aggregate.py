@@ -126,31 +126,6 @@ def multi_year_rate(
     return out_years, np.asarray(out_rates), out_full
 
 
-def behaviorspace_series(
-    years: Sequence[int],
-    renovations: Sequence[float],
-    cohort_totals: Sequence[float],
-) -> Tuple[List[int], List[float], List[float]]:
-    """
-    Relabel an annual series the way a NetLogo BehaviorSpace table labels it.
-
-    BehaviorSpace records metrics after each `go`, and `go` increments `year`
-    at its end.  So the row with `year = Y` holds the results of model year
-    Y - 1.  The first row (step 0, `year = 2016`) is recorded after `setup`
-    and holds zeros.  The last model year (2050) is never recorded, because
-    `go` calls `stop` in that tick.
-
-    Returns (labels, renovations, cohort_totals) in that convention.  The
-    step-0 row uses the first year's cohort sizes so that a mean denominator
-    is not pulled down by the zeros that BehaviorSpace reports there.
-    """
-    years = list(years)
-    renov = list(renovations)
-    total = list(cohort_totals)
-    labels = [years[0]] + [y + 1 for y in years[:-1]]
-    return labels, [0.0] + renov[:-1], [total[0]] + total[:-1]
-
-
 def multi_year_rate_from_df(
     df,
     renov_col: str,
