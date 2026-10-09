@@ -10,14 +10,22 @@ cohort, see bench_v4.aggregate), and tabulates model vs published values.
     python compare_to_paper.py --case NL         # one case study
     python compare_to_paper.py --plot cmp.png    # also save a figure
     python compare_to_paper.py --csv cmp.csv     # machine-readable output
+    python compare_to_paper.py --labels behaviorspace
+
+Year labels
+-----------
+`--labels model` (default) puts model year Y in the window that contains Y.
+`--labels behaviorspace` uses the NetLogo BehaviorSpace table convention: the
+row labelled Y holds model year Y - 1, the first row (2016) is zero, and model
+year 2050 is not recorded.  The paper's figures were made from BehaviorSpace
+output, so this may be the convention behind them.
 
 Reference values
 ----------------
 PAPER_FIG5 below is digitised by eye from Fig. 5 of the published PDF, which
 has no data table and no supplementary data file. Treat the values as accurate
 to roughly +/- 0.5 percentage points, and read differences smaller than that as
-noise. Replace them if the underlying series is ever obtained from the authors
-(see MODEL_AUDIT.md section 3.2, item 1).
+noise.
 """
 
 from __future__ import annotations
@@ -33,7 +41,7 @@ _BENCH_PATH = str(Path(__file__).resolve().parent)
 if _BENCH_PATH not in sys.path:
     sys.path.insert(0, _BENCH_PATH)
 
-from bench_v4.aggregate import REPORT_YEARS, WINDOW, multi_year_rate  # noqa: E402
+from bench_v4.aggregate import REPORT_YEARS, WINDOW  # noqa: E402
 
 # Paper scenario name -> the model's `learning` setting.
 SCENARIOS = {
@@ -71,34 +79,33 @@ DIGITISING_TOLERANCE = 0.5  # percentage points
 
 
 def _run_seed(bench_path: str, case: str, learning: str, seed: int,
-              n_households: int | None) -> dict:
+              labels: str) -> dict:
     """One model run; returns the per-cohort windowed rates for that seed."""
     import sys
     if bench_path not in sys.path:
         sys.path.insert(0, bench_path)
     from bench_v4 import BENCHv4
-    from bench_v4.aggregate import multi_year_rate
+    from bench_v4.aggregate import behaviorspace_series, multi_year_rate
 
-    m = BENCHv4(case_study=case, learning=learning, seed=seed,
-                n_households=n_households)
+    m = BENCHv4(case_study=case, learning=learning, seed=seed)
     m.run()
-    years = m.years()
     out = {}
     for cat in COHORTS:
-        _, rates, _ = multi_year_rate(
-            years,
-            [s.renov_by_dwage.get(cat, 0) for s in m.history],
-            [s.total_by_dwage.get(cat, 0) for s in m.history],
-        )
+        years = m.years()
+        renov = [s.renov_by_dwage.get(cat, 0) for s in m.history]
+        total = [s.total_by_dwage.get(cat, 0) for s in m.history]
+        if labels == "behaviorspace":
+            years, renov, total = behaviorspace_series(years, renov, total)
+        _, rates, _ = multi_year_rate(years, renov, total)
         out[cat] = rates
     return out
 
 
 def run_scenario(case: str, scen: str, seeds: int, jobs: int,
-                 n_households: int | None) -> dict[int, np.ndarray]:
+                 labels: str) -> dict[int, np.ndarray]:
     """Returns {cohort: (seeds, n_windows) array of windowed rates}."""
     per_seed = Parallel(n_jobs=jobs)(
-        delayed(_run_seed)(_BENCH_PATH, case, SCENARIOS[scen], s, n_households)
+        delayed(_run_seed)(_BENCH_PATH, case, SCENARIOS[scen], s, labels)
         for s in range(1, seeds + 1)
     )
     return {cat: np.array([r[cat] for r in per_seed]) for cat in COHORTS}
@@ -111,8 +118,8 @@ def main() -> None:
                     help="Monte Carlo seeds per scenario (default: 100, as the paper)")
     ap.add_argument("--jobs", type=int, default=-1, help="Parallel workers (-1 = all cores)")
     ap.add_argument("--case", choices=["NL", "ES"], help="Limit to one case study")
-    ap.add_argument("--n-households", type=int, default=None,
-                    help="Agents per run (default: survey size, 759 NL / 793 ES)")
+    ap.add_argument("--labels", choices=["model", "behaviorspace"], default="model",
+                    help="Year-label convention for the 5-year windows (see above)")
     ap.add_argument("--plot", metavar="PNG", help="Also save a model-vs-paper figure")
     ap.add_argument("--csv", metavar="CSV", help="Also write the table as CSV")
     args = ap.parse_args()
@@ -120,7 +127,7 @@ def main() -> None:
     cases = [args.case] if args.case else ["NL", "ES"]
     print(f"BENCH v4 vs Niamir et al. (2024) Fig. 5")
     print(f"{args.seeds} seeds/scenario  |  {WINDOW}-year windows  |  "
-          f"households: {args.n_households or 'survey default'}")
+          f"year labels: {args.labels}")
     print(f"Paper values digitised from Fig. 5, +/- ~{DIGITISING_TOLERANCE} pp\n")
 
     results: dict = {}
@@ -133,7 +140,7 @@ def main() -> None:
             if key not in PAPER_FIG5:
                 continue
             results[key] = run_scenario(case, scen, args.seeds, args.jobs,
-                                        args.n_households)
+                                        args.labels)
 
             hdr = "  ".join(f"{y:>6d}" for y in REPORT_YEARS)
             print(f"--- {case} {scen} " + "-" * 52)
@@ -173,13 +180,6 @@ def main() -> None:
           f"({int((err_arr <= DIGITISING_TOLERANCE).sum())} of {len(err_arr)})")
     print(f"Worst single point   : {err_arr.max():.2f} pp")
     print()
-    print("Known contributors to the residual, see MODEL_AUDIT.md:")
-    print("  1.2 #1  'Slow dynamics' reaches ~1 agent/run, so SD is effectively")
-    print("          No learning, not the social baseline the paper describes")
-    print("  3.3 #3  every household starts with an empty renovation history, so the")
-    print("          2016 tick fires as one synchronised burst")
-    print("  2.3 #2  dwelling vintage shares are applied in reverse order from 2025")
-
     if args.csv:
         import csv
         with open(args.csv, "w", newline="", encoding="utf-8") as fh:

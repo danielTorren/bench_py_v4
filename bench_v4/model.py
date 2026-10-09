@@ -4,7 +4,10 @@ BENCH v4 — vectorized Python ABM for household energy renovation.
 Agent attributes are stored as numpy arrays; all random draws use
 self._np_rng (numpy Generator).
 
-Tick procedure order:
+This is a literal port of the NetLogo model `BENCH_ v04_ B-NLD.ESP.nlogox`,
+including its known defects.  Do not "fix" behaviour here.
+
+Tick procedure order (same as the NetLogo `go`):
     _recall_memory      pre-2016 renovation status (first tick only)
     _update_dwelling    probabilistic dw_age update (from 2025)
     _knowledge          awareness → guilt → knowledge score
@@ -12,11 +15,11 @@ Tick procedure order:
     _consideration      PBC gates (sticky)
     _utility            U1 probit score for investment
     _action             renovation decision
-    _update_income      CGE income scaling          (every year)
     _save_energy        gas savings                 (from 2017)
     _invest             investment cost tracking    (from 2017)
     _learn              social learning             (from 2017)
-    _update_energy      dw_elab degradation        (from 2017)
+    _update_income      CGE income scaling          (every year)
+    _update_energy      dw_elab improvement         (from 2017)
     _update_memory      cooldown / invest1 reset
 """
 
@@ -35,7 +38,7 @@ from .params import (
     PBC_INVEST_THRESH, PBC_CONSERV_THRESH, PBC_SWITCH_THRESH,
     UTILITY_COEF, I1_COST, GAS_SAVE_FRACTION,
     COOLDOWN_BY_DWAGE,
-    LEARNING_RATE, LEARNING_CAP, SLOW_NEIGHBOR_MIN,
+    LEARNING_RATE, LEARNING_CAP, SLOW_NEIGHBOR_MIN, PBC_NEIGHBOR_CAP_SLOW_FAST,
     RECALL_PROB, DWAGE_UPDATE,
     START_YEAR, END_YEAR,
     GRID_HALF,
@@ -149,7 +152,9 @@ class BENCHv4:
     memory       : apply recall of pre-2016 renovations in first tick
     investment   : whether Investment behaviour is enabled
     data_dir     : path to CGE CSV files
-    n_households : synthetic population size (None → survey default)
+
+    The population size is fixed by the case study (NetLogo `create-turtles`):
+    793 households for ES, 759 for NL.
     """
 
     def __init__(
@@ -160,19 +165,12 @@ class BENCHv4:
         memory: bool = True,
         investment: bool = True,
         data_dir: str | None = None,
-        n_households: int | None = None,
-        population_df=None,
     ):
         self.case_study   = case_study
         self.learning     = learning
         self.memory_on    = memory
         self.investment   = investment
-        self._population_df = population_df
-        self.n_households = (
-            n_households
-            or (len(population_df) if population_df is not None else None)
-            or N_HOUSEHOLDS[case_study]
-        )
+        self.n_households = N_HOUSEHOLDS[case_study]
 
         if seed is None:
             seed = 1
@@ -196,10 +194,7 @@ class BENCHv4:
 
     def setup(self) -> None:
         self._load_data()
-        if self._population_df is not None:
-            self._create_arrays_from_df(self._population_df)
-        else:
-            self._create_arrays()
+        self._create_arrays()
         self._place_on_grid()
         self._build_neighbor_index()
 
@@ -217,11 +212,12 @@ class BENCHv4:
         self._utility()
         self._action()
 
-        self._update_income()
         if self.year >= 2017:
             self._save_energy()
             self._invest()
             self._learn()
+        self._update_income()
+        if self.year >= 2017:
             self._update_energy()
 
         self._update_memory()
@@ -243,7 +239,7 @@ class BENCHv4:
         return self.history
 
     # ------------------------------------------------------------------
-    # Initialisation — Option A: direct numpy batch draws
+    # Initialisation: NetLogo `setup` group distributions
     # ------------------------------------------------------------------
 
     def _load_data(self) -> None:
@@ -366,112 +362,13 @@ class BENCHv4:
         self._save_a0 = np.zeros(N, dtype=np.float64)
         self._invs_a0 = np.zeros(N, dtype=np.float64)
 
-    # ------------------------------------------------------------------
-    # Initialisation — Option B: initialize from a real/synthetic DataFrame
-    # ------------------------------------------------------------------
-
-    def _create_arrays_from_df(self, df) -> None:
-        """Fill agent arrays from a 19-column population DataFrame."""
-        import pandas as pd
-
-        N   = self.n_households
-        rng = self._np_rng
-
-        def _col(name: str, default: float = 0.0) -> np.ndarray:
-            if name in df.columns:
-                return (pd.to_numeric(df[name], errors="coerce")
-                          .fillna(default)
-                          .to_numpy(dtype=np.float64).copy())
-            return np.full(N, default, dtype=np.float64)
-
-        # --- Income bracket → EUR midpoint + group ID ---
-        _INCOME_EUR = {1: 7_500, 2: 22_500, 3: 40_000, 4: 60_000,
-                       5: 80_000, 6: 100_000, 7: 130_000}
-        _INCOME_GRP = {1: 1, 2: 1, 3: 2, 4: 3, 5: 4, 6: 5, 7: 5}
-        inc_b = np.clip(_col("income", 3).astype(int), 1, 7)
-        self._income  = np.array([_INCOME_EUR.get(int(b), 40_000) for b in inc_b], dtype=np.float64)
-        self._h_group = np.array([_INCOME_GRP.get(int(b), 3)      for b in inc_b], dtype=np.int8)
-
-        # --- Behavioural scalars (float64) ---
-        self._gas    = _col("gas",  1_500.0)
-        self._know   = _col("ceek", 4.0)
-        self._cee_aw = _col("ceea", 4.0)
-        self._ed_aw  = _col("eda",  4.0)
-
-        # PN / SN / PBC: single survey score broadcast to all 3 action columns
-        pn_v  = _col("pn",   4.0)
-        sn_v  = _col("sn",   4.0)
-        pbc1v = _col("pbc1", 4.0)
-        pbc2v = _col("pbc2", 4.0)
-        pbc3v = _col("pbc3", 4.0)
-        self._pn   = np.column_stack([pn_v,  pn_v,  pn_v]).copy()
-        self._sn   = np.column_stack([sn_v,  sn_v,  sn_v]).copy()
-        self._pbcI = np.column_stack([pbc1v, pbc1v, pbc1v]).copy()
-        self._pbcC = np.column_stack([pbc2v, pbc2v, pbc2v]).copy()
-        self._pbcS = np.column_stack([pbc3v, pbc3v, pbc3v]).copy()
-
-        # --- Structural (int8) ---
-        self._dw_type = _col("dw_type", 1).astype(np.int8)
-        self._dw_st   = _col("tenure",  1).astype(np.int8)
-
-        # education: ISCED 1–6 → 3-band (1=low, 2=mid, 3=high)
-        _EDU = {1: 1, 2: 1, 3: 2, 4: 2, 5: 3, 6: 3}
-        edu_r = np.clip(_col("education", 3).astype(int), 1, 6)
-        self._edu = np.array([_EDU.get(int(e), 2) for e in edu_r], dtype=np.int8)
-
-        # age: continuous years → 4-band
-        age_yr = _col("age", 40.0)
-        self._age = np.where(age_yr < 30, 1,
-                    np.where(age_yr < 50, 2,
-                    np.where(age_yr < 70, 3, 4))).astype(np.int8)
-
-        # dw_size: 1–5 bands → 3-band
-        _SZ = {1: 1, 2: 1, 3: 2, 4: 3, 5: 3}
-        sz_r = np.clip(_col("dw_size", 3).astype(int), 1, 5)
-        self._dw_size = np.array([_SZ.get(int(s), 2) for s in sz_r], dtype=np.int8)
-
-        # dw_age: 1–6 bands → 3-band
-        _DA = {1: 1, 2: 1, 3: 2, 4: 2, 5: 3, 6: 3}
-        da_r = np.clip(_col("dw_age", 3).astype(int), 1, 6)
-        self._dw_age = np.array([_DA.get(int(d), 2) for d in da_r], dtype=np.int8)
-
-        # energy_label: 1–7 (7=dk) → 1–5; dk rows resampled from known
-        elab_r = np.clip(_col("energy_label", 3).astype(int), 1, 7)
-        elab = np.clip(elab_r, 1, 5).astype(np.int8)
-        dk = elab_r == 7
-        if dk.any():
-            known = elab[~dk]
-            elab[dk] = rng.choice(known if len(known) > 0 else np.array([3], dtype=np.int8),
-                                  size=int(dk.sum()))
-        self._dw_elab = elab
-
-        # --- Fixed defaults for variables absent from survey ---
-        self._ene_pat = np.ones((N, 3),    dtype=np.float64)
-        self._erI     = np.full((N, 3), -0.02, dtype=np.float64)
-
-        # --- Simulation state (zeros / False at start) ---
-        self._aware  = np.zeros(N, dtype=np.float64)
-        self._k      = np.zeros(N, dtype=np.float64)
-        self._U1     = np.zeros(N, dtype=np.float64)
-
-        self._guilt  = np.zeros(N,      dtype=bool)
-        self._m_st   = np.zeros((N, 3), dtype=bool)
-        self._cI_st  = np.zeros((N, 3), dtype=bool)
-        self._cC_st  = np.zeros((N, 3), dtype=bool)
-        self._cS_st  = np.zeros((N, 3), dtype=bool)
-
-        self._act1      = np.zeros(N, dtype=bool)
-        self._invest1   = np.zeros(N, dtype=bool)
-        self._act1_year = np.zeros(N, dtype=np.int32)
-        self._insulated = np.zeros(N, dtype=bool)
-
-        self._save_a0 = np.zeros(N, dtype=np.float64)
-        self._invs_a0 = np.zeros(N, dtype=np.float64)
-
     def _place_on_grid(self) -> None:
-        """Draw grid positions; scale preserves ~0.1 agents/cell density."""
-        scale = math.sqrt(self.n_households / N_HOUSEHOLDS[self.case_study])
-        half  = max(1, round(GRID_HALF * scale))
+        """Draw grid positions on the fixed NetLogo world (-44..44 on both axes).
+
+        NetLogo uses `setxy random-xcor random-ycor`; a turtle's patch is then
+        uniform over the 89 x 89 patches, which is what is drawn here.
+        """
+        half = GRID_HALF
         self._grid_min = -half
         self._grid_max =  half
         self._grid_x = self._np_rng.integers(-half, half + 1,
@@ -629,7 +526,10 @@ class BENCHv4:
         )
 
     def _action(self) -> None:
-        eligible       = (self._U1 > 0) & ~self._invest1 & ~self._insulated & (self._dw_elab > 1)
+        # NetLogo `action` has two sequential ifs.  The first tests
+        # h.sta = "insulated", but the second does not and overrides it, so
+        # the "insulated" status has no effect on the decision.
+        eligible       = (self._U1 > 0) & ~self._invest1 & (self._dw_elab > 1)
         self._act1     = eligible
         self._invest1 |= eligible
 
@@ -645,77 +545,93 @@ class BENCHv4:
 
     def _learn(self) -> None:
         """
-        Social learning.  Option B: collect unique candidate neighbours once,
-        compute each neighbour's stats a single time (avoids redundant recomputation
-        when j borders multiple active agents), then apply updates.
+        Social learning, ported line by line from the NetLogo `learn` procedure.
+
+        NetLogo runs `ask turtles [...]` in a random order, and each active
+        agent changes its neighbours at once.  So an agent later in the order
+        reads values that earlier agents already changed in this tick.  This
+        loop keeps that sequential behaviour.
+
+        Neighbours: NetLogo does `create-links-to other turtles-on neighbors`
+        and then uses `link-neighbors`.  Links are never removed, but agents
+        never move and patch adjacency is symmetric, so `link-neighbors` of an
+        active agent is always the same set as `turtles-on neighbors`.  The
+        precomputed patch neighbourhood (`_nbr_idx`, torus) is therefore used.
+
+        Gates are ported as written: growth is `x + x * 0.05` with no upper
+        clamp, so values can pass 6.6.  The `pbcI1` neighbour gate is 6.5 in
+        "Slow dynamics" and "Fast dynamics" and 6.6 in "Informative".
         """
-        if self.learning == "No learning":
+        if self.learning not in ("Slow dynamics", "Fast dynamics", "Informative"):
             return
 
         lc = LEARNING_CAP
         lr = LEARNING_RATE
+        informative = self.learning == "Informative"
+        slow        = self.learning == "Slow dynamics"
+        pbc_gate    = lc if informative else PBC_NEIGHBOR_CAP_SLOW_FAST
 
-        # Informative broadcast to all households
-        if self.learning == "Informative":
-            for arr in (self._know, self._cee_aw, self._ed_aw):
-                m = arr <= lc
-                arr[m] = np.minimum(arr[m] * (1.0 + lr), lc + lr)
+        know, cee, ed = self._know, self._cee_aw, self._ed_aw
+        pn, sn, pbcI  = self._pn, self._sn, self._pbcI
+        active        = self._act1 | self._invest1
+        rng           = self._np_rng
 
-        active_idx = np.where(self._act1 | self._invest1)[0]
-        if len(active_idx) == 0:
-            return
-
-        slow = (self.learning == "Slow dynamics")
-
-        # --- Option B: collect unique candidates, compute stats once each ---
-        cand: set = set()
-        for i in active_idx:
-            for jv in self._nbr_idx[i]:
-                cand.add(int(jv))
-
-        nbr_know:  dict[int, float] = {}
-        nbr_cee:   dict[int, float] = {}
-        nbr_ed:    dict[int, float] = {}
-        nbr_pn1:   dict[int, float] = {}
-        nbr_sn1:   dict[int, float] = {}
-        nbr_pbcI1: dict[int, float] = {}
-        for j in cand:
+        def stats(j):
             nn = self._nbr_idx[j]
-            if len(nn) == 0:
-                continue
-            nbr_know[j]   = _max_mean_median_arr(self._know[nn])
-            nbr_cee[j]    = _max_mean_median_arr(self._cee_aw[nn])
-            nbr_ed[j]     = _max_mean_median_arr(self._ed_aw[nn])
-            nbr_pn1[j]    = _max_mean_median_arr(self._pn[nn, 0])
-            nbr_sn1[j]    = _max_mean_median_arr(self._sn[nn, 0])
-            nbr_pbcI1[j]  = _max_mean_median_arr(self._pbcI[nn, 0])
+            return (
+                _max_mean_median_arr(know[nn]),
+                _max_mean_median_arr(cee[nn]),
+                _max_mean_median_arr(ed[nn]),
+                _max_mean_median_arr(pn[nn, 0]),
+                _max_mean_median_arr(sn[nn, 0]),
+                _max_mean_median_arr(pbcI[nn, 0]),
+            )
 
-        # --- Apply social learning from each active agent ---
-        for i in active_idx:
-            if self._pbcI[i, 0] < lc:
-                self._pbcI[i, 0] = min(float(self._pbcI[i, 0]) * (1.0 + lr), lc)
+        def update(j, s):
+            ngb_k, ngb_ca, ngb_ed, ngb_pn1, ngb_sn1, ngb_pbcI1 = s
+            if know[j] < ngb_k and know[j] < lc:
+                know[j] = know[j] + know[j] * lr
+            if cee[j] < ngb_ca and cee[j] < lc:
+                cee[j] = cee[j] + cee[j] * lr
+            if ed[j] < ngb_ed and ed[j] < lc:
+                ed[j] = ed[j] + ed[j] * lr
+            if pn[j, 0] < ngb_pn1 and pn[j, 0] < lc:
+                pn[j, 0] = pn[j, 0] + pn[j, 0] * lr
+            if sn[j, 0] < ngb_sn1 and sn[j, 0] < lc:
+                sn[j, 0] = sn[j, 0] + lr * sn[j, 0]
+            if pbcI[j, 0] < pbc_gate and pbcI[j, 0] < ngb_pbcI1:
+                pbcI[j, 0] = pbcI[j, 0] + pbcI[j, 0] * lr
+
+        for i in rng.permutation(self.n_households):
+            if informative:
+                if know[i] <= lc:
+                    know[i] = know[i] + know[i] * lr
+                if cee[i] <= lc:
+                    cee[i] = cee[i] + cee[i] * lr
+                if ed[i] <= lc:
+                    ed[i] = ed[i] + ed[i] * lr
+
+            if not active[i]:
+                continue
+
+            if pbcI[i, 0] < lc:
+                pbcI[i, 0] = pbcI[i, 0] + pbcI[i, 0] * lr
 
             nbrs = self._nbr_idx[i]
             if len(nbrs) == 0:
                 continue
-            if slow and len(nbrs) <= SLOW_NEIGHBOR_MIN:
-                continue
+            nbrs = rng.permutation(nbrs)
 
-            for j in nbrs:
-                if j not in nbr_know:
-                    continue
-                if self._know[j]   < nbr_know[j]   and self._know[j]   < lc:
-                    self._know[j]   = min(float(self._know[j])   * (1.0 + lr), lc)
-                if self._cee_aw[j] < nbr_cee[j]    and self._cee_aw[j] < lc:
-                    self._cee_aw[j] = min(float(self._cee_aw[j]) * (1.0 + lr), lc)
-                if self._ed_aw[j]  < nbr_ed[j]     and self._ed_aw[j]  < lc:
-                    self._ed_aw[j]  = min(float(self._ed_aw[j])  * (1.0 + lr), lc)
-                if self._pn[j, 0]  < nbr_pn1[j]    and self._pn[j, 0]  < lc:
-                    self._pn[j, 0]  = min(float(self._pn[j, 0])  * (1.0 + lr), lc)
-                if self._sn[j, 0]  < nbr_sn1[j]    and self._sn[j, 0]  < lc:
-                    self._sn[j, 0]  = min(float(self._sn[j, 0])  * (1.0 + lr), lc)
-                if self._pbcI[j,0] < nbr_pbcI1[j]  and self._pbcI[j,0] < lc:
-                    self._pbcI[j,0] = min(float(self._pbcI[j,0]) * (1.0 + lr), lc)
+            if slow:
+                # All neighbour statistics are set first, then applied only
+                # if the agent has more than four link-neighbours.
+                nbr_stats = [(j, stats(j)) for j in nbrs]
+                if len(nbrs) > SLOW_NEIGHBOR_MIN:
+                    for j, s in nbr_stats:
+                        update(j, s)
+            else:
+                for j in nbrs:
+                    update(j, stats(j))
 
     def _update_income(self) -> None:
         if self.n >= len(self.cge):
@@ -812,8 +728,8 @@ class BENCHv4:
         ``bench_v4.aggregate`` for the definition and the keyword arguments
         (``end_years``, ``window``, ``denominator``, ``min_year``).
 
-        ``min_year`` defaults to ``aggregate.REPORT_MIN_YEAR`` (2017), which
-        drops the 2016 initialisation tick; pass ``min_year=None`` to include it.
+        ``min_year`` defaults to ``aggregate.REPORT_MIN_YEAR`` (None), which
+        keeps every year 2016-2050; pass ``min_year=2017`` to drop 2016.
         """
         from .aggregate import REPORT_MIN_YEAR, multi_year_rate
 
@@ -835,8 +751,8 @@ class BENCHv4:
         """
         Renovation rate per income group aggregated over 5-year windows.
 
-        ``min_year`` defaults to ``aggregate.REPORT_MIN_YEAR`` (2017), which
-        drops the 2016 initialisation tick; pass ``min_year=None`` to include it.
+        ``min_year`` defaults to ``aggregate.REPORT_MIN_YEAR`` (None), which
+        keeps every year 2016-2050; pass ``min_year=2017`` to drop 2016.
         """
         from .aggregate import REPORT_MIN_YEAR, multi_year_rate
 

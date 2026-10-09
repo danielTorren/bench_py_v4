@@ -86,13 +86,20 @@ PBC_SWITCH_THRESH  = {"NL": 1.0, "ES": 3.5}
 # ---------------------------------------------------------------------------
 LEARNING_RATE     = 0.05
 LEARNING_CAP      = 6.6
-SLOW_NEIGHBOR_MIN = 4
+SLOW_NEIGHBOR_MIN = 4      # Slow dynamics: `count link-neighbors > 4`
+# Neighbour pbcI1 gate in "Slow dynamics" and "Fast dynamics" is 6.5, not 6.6
+# (NetLogo: `if ((pbcI1 < 6.5) and (pbcI1 < ngb.pbcI1))`).
+PBC_NEIGHBOR_CAP_SLOW_FAST = 6.5
 
 # ---------------------------------------------------------------------------
 # Memory recall probabilities (% who had renovated before 2016)
 # ---------------------------------------------------------------------------
+# ES group 3 is written as 2.9 in NetLogo, but the following line resets
+# everyone above 1.7, so the effective probability is 1.7:
+#     if (aa <= 2.9)[set act1 true  set invest1 true set h.sta "insulated"]
+#     if (aa > 1.7) and (aa <= 100)[set act1 false  set invest1 False ]
 RECALL_PROB = {
-    "ES": {1: 2.3, 2: 1.7, 3: 2.9, 4: 3.0, 5: 2.5},
+    "ES": {1: 2.3, 2: 1.7, 3: 1.7, 4: 3.0, 5: 2.5},
     "NL": {1: 1.8, 2: 1.4, 3: 1.5, 4: 3.6, 5: 1.2},
 }
 
@@ -121,7 +128,13 @@ GRID_HALF = 44
 # ---------------------------------------------------------------------------
 # Dwelling age update distributions (MESSAGEix-Buildings, 2025 onwards)
 # { year_range: (p_new, p_mid) }
-#   dw.age=1 if r < p_new  |  dw.age=2 if r < p_new+p_mid  |  dw.age=3 otherwise
+#   dw.age=1 if r < p_new  |  dw.age=2 if r < p_mid  |  dw.age=3 otherwise
+#   (p_mid is the cumulative upper bound, as in the NetLogo `dag` tests.)
+#
+# Ported as written.  The NetLogo assigns the largest share to dw.age = 1
+# (<10 yr); the MESSAGEix shares appear to be in reverse cohort order.  The
+# NetLogo has two 2040-2045 blocks (the second one wins, kept here) and no
+# block for 2050, so dw_age is not redrawn in 2050.
 # ---------------------------------------------------------------------------
 DWAGE_UPDATE = {
     "NL": {

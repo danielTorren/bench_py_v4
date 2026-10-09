@@ -1,0 +1,54 @@
+# BENCH v4: scenarios of Niamir et al. (2024), Energy Research & Social Science 110.
+#
+# Each entry is one scenario.
+#   case_study : "ES" (Spain, Navarre) or "NL" (Netherlands, Overijssel)
+#   learning   : "No learning" | "Slow dynamics" | "Informative"
+#                ("Fast dynamics" is also in the model but not in the paper)
+#   runs       : number of Monte Carlo runs (the paper reports means of 100)
+#   seed       : run i uses seed + i (default 1)
+#   memory     : apply pre-2016 renovation recall (NetLogo `Memory`)
+#   run_label  : output folder name
+#
+# Paper scenario names: SD = Slow dynamics, ID = Informative.
+
+- case_study: ES
+  learning: No learning
+  runs: 100
+  seed: 1
+  memory: true
+  run_label: ES_NoLearning
+
+- case_study: ES
+  learning: Slow dynamics
+  runs: 100
+  seed: 1
+  memory: true
+  run_label: ES_SlowDynamics
+
+- case_study: ES
+  learning: Informative
+  runs: 100
+  seed: 1
+  memory: true
+  run_label: ES_Informative
+
+- case_study: NL
+  learning: No learning
+  runs: 100
+  seed: 1
+  memory: true
+  run_label: NL_NoLearning
+
+- case_study: NL
+  learning: Slow dynamics
+  runs: 100
+  seed: 1
+  memory: true
+  run_label: NL_SlowDynamics
+
+- case_study: NL
+  learning: Informative
+  runs: 100
+  seed: 1
+  memory: true
+  run_label: NL_Informative
